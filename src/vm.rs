@@ -94,11 +94,11 @@ impl Machine {
         let destination_register = to_reg((instruction >> 9) & 0x7);
         let source_register = to_reg((instruction >> 6) & 0x7);
         // otherwise register mode.
-        let is_register_mode = instruction >> 5 == 0;
+        let is_imm_mode = (instruction >> 5) & 0x1; 
         // alternativley, imm_mode = (instruction >> 5) & 0x1
-        info!("Source: {:?} Dest: {:?} Mode: {}", source_register, destination_register, if is_register_mode { "Register Mode" } else { "Immediate Mode" });
+        info!("Source: {:?} Dest: {:?} Mode: {:?}", source_register, destination_register, is_imm_mode);
 
-        if is_register_mode {
+        if is_imm_mode == 0 {
             let source_register_2 = to_reg(instruction & 0x7);
             self[Register::R0] =
                 self[source_register] + self[source_register_2];
