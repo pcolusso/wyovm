@@ -1,6 +1,7 @@
+use std::ops::{Index, IndexMut};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
-use tracing::error;
+use tracing::{debug, error, info};
 
 const MEM_MAX: usize = 1 << 16;
 const PC_START: u16 = 0x3000;
@@ -8,6 +9,20 @@ const PC_START: u16 = 0x3000;
 pub struct Machine {
     mem: [u16; MEM_MAX],
     reg: [u16; 11],
+}
+
+impl Index<Register> for Machine {
+    type Output = u16;
+
+    fn index(&self, r: Register) -> &Self::Output {
+        &self.reg[r as usize]
+    }
+}
+
+impl IndexMut<Register> for Machine {
+    fn index_mut(&mut self, register: Register) -> &mut Self::Output {
+        &mut self.reg[register as usize]
+    }
 }
 
 // further reading: https://en.wikipedia.org/wiki/Two%27s_complement
@@ -27,61 +42,30 @@ impl Machine {
 
         // TODO:: this may be better moved into the run method.
         // since exactly one condition flag should be set at any given time, set the Z flag
-        *(machine.r(Register::Cond)) = Condition::Zero as u16;
+        machine[Register::Cond] = Condition::Zero as u16;
         // set the PC to the starting position
-        *(machine.r(Register::PC)) = PC_START;
+        machine[Register::PC] = PC_START;
 
         machine
     }
 
-    fn r(&mut self, register: Register) -> &mut u16 {
-        match register {
-            Register::R0 => &mut self.reg[0],
-            Register::R1 => &mut self.reg[1],
-            Register::R2 => &mut self.reg[2],
-            Register::R3 => &mut self.reg[3],
-            Register::R4 => &mut self.reg[4],
-            Register::R5 => &mut self.reg[5],
-            Register::R6 => &mut self.reg[6],
-            Register::R7 => &mut self.reg[7],
-            Register::PC => &mut self.reg[8],
-            Register::Cond => &mut self.reg[9],
-            Register::Count => &mut self.reg[10], // TODO: is count not actually a register?
-        }
-    }
-
-    fn get_register(&self, register: Register) -> u16 {
-        match register {
-            Register::R0 => self.reg[0],
-            Register::R1 => self.reg[1],
-            Register::R2 => self.reg[2],
-            Register::R3 => self.reg[3],
-            Register::R4 => self.reg[4],
-            Register::R5 => self.reg[5],
-            Register::R6 => self.reg[6],
-            Register::R7 => self.reg[7],
-            Register::PC => self.reg[8],
-            Register::Cond => self.reg[9],
-            Register::Count => self.reg[10], // TODO: is count not actually a register?
-        }
-    }
-
     // Simulates a mem_read(reg[PC]++)
     fn incr_pc(&mut self) -> u16 {
-        let current = self.get_register(Register::PC);
-        *(self.r(Register::PC)) += 1;
+        let current = self[Register::PC];
+        self[Register::PC] += 1;
         current
     }
 
+    // update the condition register
     fn update_flags(&mut self) {
-        let value = self.get_register(Register::R0);
-        if value == 0 {
-            //                          COUNTER STRIKE
-            *(self.r(Register::Cond)) = Condition::Zero as u16
+        let value = self[Register::R0];
+        self[Register::Cond] = if value == 0 {
+            //COUNTER STRIKE
+            Condition::Zero as u16
         } else if value >> 15 == 1 {
-            *(self.r(Register::Cond)) = Condition::Negative as u16
+            Condition::Negative as u16
         } else {
-            *(self.r(Register::Cond)) = Condition::Positive as u16
+            Condition::Positive as u16
         }
     }
 
@@ -112,14 +96,15 @@ impl Machine {
         // otherwise register mode.
         let is_register_mode = instruction >> 5 == 0;
         // alternativley, imm_mode = (instruction >> 5) & 0x1
+        info!("Source: {:?} Dest: {:?} Mode: {}", source_register, destination_register, if is_register_mode { "Register Mode" } else { "Immediate Mode" });
 
         if is_register_mode {
             let source_register_2 = to_reg(instruction & 0x7);
-            *(self.r(Register::R0)) =
-                self.get_register(source_register) + self.get_register(source_register_2);
+            self[Register::R0] =
+                self[source_register] + self[source_register_2];
         } else {
             let imm5 = sign_extend(instruction & 0x14, 5);
-            *(self.r(destination_register)) = self.get_register(source_register) + imm5;
+            self[destination_register] = self[source_register] + imm5;
         }
 
         self.update_flags();
@@ -157,7 +142,7 @@ impl Default for Machine {
     }
 }
 
-#[derive(FromPrimitive, ToPrimitive)]
+#[derive(FromPrimitive, ToPrimitive, Debug)]
 enum Register {
     R0,
     R1,
@@ -218,6 +203,7 @@ enum Condition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_log::test;
 
     #[test]
     fn test_shifting_op() {
@@ -234,15 +220,44 @@ mod tests {
     fn test_add_reg_instr() {
         let mut m = Machine::new();
 
-        m.reg[Register::R1 as usize] = 5;
-        m.reg[Register::R2 as usize] = 3;
+        m[Register::R1] = 5;
+        m[Register::R2] = 3;
 
         //                       ADD  R0  R1  - --  R2
         let instruction = 0b0001_000_001_0_00_010;
 
         m.add(instruction);
 
-        assert_eq!(m.reg[Register::R0 as usize], 8);
-        assert_eq!(m.reg[Register::Cond as usize], 1); // positive
+        assert_eq!(m[Register::R0], 8);
+        assert_eq!(m[Register::Cond], 1); // positive
     }
+
+    #[test]
+    fn test_add_imm_instr() {
+        let mut m = Machine::new();
+
+        m[Register::R1] = 5;
+        let instruction = 0b0001_000_001_1_00011;
+        m.add(instruction);
+
+        assert_eq!(m[Register::R0], 8);
+        assert_eq!(m[Register::Cond], 1); // positive
+   }
+
+   #[test]
+   fn test_add_negative_result() {
+       let mut m = Machine::new();
+       
+       // Set up for a negative result
+       m[Register::R1] = 5;
+       
+       // Add -10 (in 5-bit two's complement)
+       let instruction = 0b0001_000_001_1_10110; // -10 in 5 bits
+       
+       m.add(instruction);
+       
+       assert_eq!(m[Register::R0] as i16, -5);
+       // Test negative flag
+       assert_eq!(m[Register::Cond], 4); // Negative flag
+   }
 }
