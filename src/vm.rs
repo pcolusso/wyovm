@@ -142,6 +142,20 @@ impl Machine {
         self.update_flags(destination_register);
     }
 
+    fn bitwise_not(&mut self, instruction: u16) {
+        let destination_register = to_reg(instruction.extract(9..=11));
+        let source_register = to_reg(instruction.extract(6..=8));
+        self[destination_register] = !self[source_register];
+        debug!(
+            "NOT ! {:?} ({:08b}) -> {:?} ({:08b})",
+            source_register,
+            self[source_register],
+            destination_register,
+            self[destination_register]
+        );
+        self.update_flags(destination_register);
+    }
+
     fn bitwise_and(&mut self, instruction: u16) {
         // im gonna stop doing the ascii diagrams for now, as they don't actually tell me the info
         // i need.
@@ -277,7 +291,7 @@ mod tests {
     use tracing::info;
 
     #[test]
-    fn test_add_reg_instr() {
+    fn add_register() {
         let mut m = Machine::new();
 
         m[Register::R0] = 5;
@@ -294,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_imm_instr() {
+    fn add_immediate() {
         let mut m = Machine::new();
 
         m[Register::R1] = 5;
@@ -308,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_negative_result() {
+    fn add_negative() {
         let mut m = Machine::new();
 
         // Set up for a negative result
@@ -328,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ldi() {
+    fn load_indirect() {
         let mut m = Machine::new();
         m.mem[6969] = 'a' as u16; // Far data
         m[Register::PC] = 6900;
@@ -343,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn test_and_reg() {
+    fn and_register_mode() {
         let mut m = Machine::new();
         m[Register::R7] = 7;
         m[Register::R5] = 5;
@@ -369,5 +383,24 @@ mod tests {
 
         assert_eq!(m[Register::R3], 0);
         assert_eq!(m[Register::Cond], Condition::Zero.to_u16().unwrap());
+    }
+
+    #[test]
+    fn not() {
+        let mut m = Machine::new();
+        m[Register::R2] = 12;
+
+        //                   NOT  R3  R2 111111
+        let instruction = 0b1001_011_010_111111;
+        info!("🔎: NOT R2 (12) -> R3()");
+        m.bitwise_not(instruction);
+
+        assert_eq!(m[Register::R3], 0b1111_1111_1111_0011);
+        assert_eq!(
+            m[Register::Cond],
+            Condition::Negative.to_u16().unwrap(), // I guess it's negative because the orig was
+            // +ve?
+            "Condition flag"
+        );
     }
 }
