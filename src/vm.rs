@@ -34,9 +34,9 @@ impl IndexMut<Register> for Machine {
 fn sign_extend(x: u16, bit_count: i32) -> u16 {
     let mut y = x;
     if y >> (bit_count - 1) & 1 != 0 {
-        y |= 0xFFFF << bit_count;
+        y |= 0xFFFFu16 << bit_count;
     }
-    debug!("+/- {:#06b} -> {}", x, y);
+    debug!("+/- {:#016b} -> {:#016b}", x, y);
     y
 }
 
@@ -97,8 +97,8 @@ impl Machine {
         */
         debug!("ADD {:#016b}", instruction);
         // Common for both modes
-        let destination_register = to_reg((instruction >> 9) & 0x7);
-        let source_register = to_reg((instruction >> 6) & 0x7);
+        let destination_register = to_reg(instruction.extract(9..=11));
+        let source_register = to_reg(instruction.extract(6..=8));
         // otherwise register mode.
         let is_imm_mode = (instruction >> 5) & 0x1;
         // alternativley, imm_mode = (instruction >> 5) & 0x1
@@ -111,13 +111,9 @@ impl Machine {
             );
             self[destination_register] = self[source_register] + self[source_register_2];
         } else {
-            let imm5 = instruction.extract(0..=5) as i16;
-            let result = imm5 + self[source_register] as i16;
-            debug!(
-                "ADD IMM {} + {:?} -> {:?} ({}) ",
-                imm5, "", destination_register, result
-            );
-            self[destination_register] = result as u16;
+            let imm5 = sign_extend(instruction.extract(0..=5), 5);
+            //let imm5 = sign_extend(instruction & 0x1F, 5);
+            self[destination_register] = self[source_register] + imm5; // Simple addition in u16
         }
 
         self.update_flags();
@@ -130,7 +126,7 @@ impl Machine {
             // FETCH
             let instruction = self.incr_pc();
             let op = instruction >> 12;
-            match Op::from_shifted_u16(op) {
+            match Op::from_u16(op) {
                 Some(Op::Add) => self.add(instruction),
                 Some(Op::And) => {}
                 Some(Op::Branch) => {}
@@ -175,7 +171,7 @@ fn to_reg(value: u16) -> Register {
     Register::from_u16(value).expect("Couldn't find register with value. Has it been shifted?")
 }
 
-#[repr(u16)]
+#[derive(FromPrimitive, ToPrimitive, Debug)]
 enum Op {
     Branch = 0x0,         // BR
     Add,                  // ADD
@@ -195,19 +191,8 @@ enum Op {
     Trap,                 // TRAP
 }
 
-impl Op {
-    fn from_shifted_u16(value: u16) -> Option<Op> {
-        // Safety: We know Op variants are 0-15
-        if value <= 0xF {
-            // Safe because we verified value is in range
-            Some(unsafe { std::mem::transmute(value) })
-        } else {
-            None
-        }
-    }
-}
-
 // TODO: if this register is never used for anything else, maybe we could change this into an enum?
+#[derive(ToPrimitive, FromPrimitive, Debug)]
 enum Condition {
     Positive = 1 << 0,
     Negative = 1 << 1,
@@ -218,6 +203,7 @@ enum Condition {
 mod tests {
     #![allow(clippy::unusual_byte_groupings)]
     use super::*;
+    use num_traits::ToPrimitive;
     use test_log::test;
 
     #[test]
@@ -259,12 +245,15 @@ mod tests {
         m[Register::R1] = 5;
 
         //                   ADD  R0  R1 I -  10
-        let instruction = 0b0001_000_001_1_11010; // -10 in 5 bits
-        info!("🔎: ADD IMM -10 + R1 -> R0");
+        let instruction = 0b0001_000_001_1_11001;
+        info!("🔎: ADD IMM -7 + R1 -> R0");
         m.add(instruction);
 
-        assert_eq!(m[Register::R0] as i16, -5);
+        debug!("R0 as u16: {}", m[Register::R0]);
+        debug!("R0 as i16: {}", m[Register::R0] as i16);
+
+        assert_eq!(m[Register::R0] as i16, -2);
         // Test negative flag
-        assert_eq!(m[Register::Cond], 4); // Negative flag
+        assert_eq!(m[Register::Cond], Condition::Negative.to_u16().unwrap()); // Negative flag
     }
 }

@@ -11,12 +11,7 @@ jobs:
 
     steps:
     - name: Check out code
-      uses: actions/checkout@v2
-
-    - name: Set up Rust
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
+      uses: actions/checkout@v4
 
     - name: Install dependencies
       run: cargo build --verbose
