@@ -1,10 +1,9 @@
 #![allow(dead_code)]
-#![allow(unused)]
 
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 use std::ops::{Index, IndexMut};
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use crate::util::Extractable;
 
@@ -119,6 +118,27 @@ impl Machine {
         self.update_flags();
     }
 
+    fn load_indirect(&mut self, instruction: u16) {
+        /*
+         ┌──────────┬───────┬─────────────────────────┐
+         │   1010   │  DR   │       PCOffset9         │
+         ├──────────┼───────┼─────────────────────────┤
+         │          │       │                         │
+        */
+        let destination_register = to_reg(instruction.extract(9..=11));
+        let pc_offset_9 = sign_extend(instruction.extract(0..=8), 9);
+        let idx = self[Register::PC] + pc_offset_9;
+        debug!(
+            "LDI PC {} + {} = {} -> {:?}",
+            self[Register::PC],
+            pc_offset_9,
+            idx,
+            destination_register
+        );
+        self[destination_register] = self.mem[idx as usize];
+        self.update_flags();
+    }
+
     pub fn run(&mut self) {
         let running = 1;
         loop {
@@ -205,6 +225,7 @@ mod tests {
     use super::*;
     use num_traits::ToPrimitive;
     use test_log::test;
+    use tracing::info;
 
     #[test]
     fn test_add_reg_instr() {
@@ -255,5 +276,20 @@ mod tests {
         assert_eq!(m[Register::R0] as i16, -2);
         // Test negative flag
         assert_eq!(m[Register::Cond], Condition::Negative.to_u16().unwrap()); // Negative flag
+    }
+
+    #[test]
+    fn test_ldi() {
+        let mut m = Machine::new();
+        m.mem[6969] = 'a' as u16; // Far data
+        m[Register::PC] = 6900;
+
+        //                   LDI  R0       69
+        let instruction = 0b0101_000_01000101;
+        info!("🔎: LDI R0 PC + 69 -> R0");
+        m.load_indirect(instruction);
+
+        assert_eq!(m[Register::R0], 'a' as u16);
+        assert_eq!(m[Register::Cond], 1); // positive
     }
 }
