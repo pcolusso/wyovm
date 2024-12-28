@@ -15,6 +15,9 @@ pub struct Machine {
     reg: [u16; 11],
 }
 
+// not too sure if worthwhile implementing Index<u16> for mem access.
+// Registers can sometimes come from u16, so it could be confusing.
+// Maybe a newtype?
 impl Index<Register> for Machine {
     type Output = u16;
 
@@ -62,8 +65,8 @@ impl Machine {
     }
 
     // update the condition register
-    fn update_flags(&mut self) {
-        let value = self[Register::R0];
+    fn update_flags(&mut self, register: Register) {
+        let value = self[register];
         self[Register::Cond] = if value == 0 {
             //COUNTER STRIKE
             Condition::Zero as u16
@@ -115,7 +118,7 @@ impl Machine {
             self[destination_register] = self[source_register] + imm5; // Simple addition in u16
         }
 
-        self.update_flags();
+        self.update_flags(destination_register);
     }
 
     fn load_indirect(&mut self, instruction: u16) {
@@ -136,24 +139,62 @@ impl Machine {
             destination_register
         );
         self[destination_register] = self.mem[idx as usize];
-        self.update_flags();
+        self.update_flags(destination_register);
     }
 
+    fn bitwise_and(&mut self, instruction: u16) {
+        // im gonna stop doing the ascii diagrams for now, as they don't actually tell me the info
+        // i need.
+        // REF: Pg525
+        let destination_register = to_reg(instruction.extract(9..=11));
+        let source_register_1 = to_reg(instruction.extract(6..=9));
+        let mode = instruction.extract(5..=5);
+        debug!("AND INSTR: {:016b}", instruction);
+        debug!(
+            "AND DR {:03b}, SR1 {:08b}",
+            instruction.extract(9..=11),
+            instruction.extract(6..=9)
+        );
+
+        if mode == 0 {
+            // register mode
+            let source_register_2 = to_reg(instruction.extract(0..=3));
+            self[destination_register] = self[source_register_1] & self[source_register_2];
+            debug!(
+                "AND {:?} ({}) & {:?} ({}) -> {:?} ({})",
+                source_register_1,
+                self[source_register_1],
+                source_register_2,
+                self[source_register_2],
+                destination_register,
+                self[destination_register]
+            );
+        } else {
+            // immediate mode
+            let imm = sign_extend(instruction.extract(0..=5), 5);
+            self[destination_register] = self[source_register_1] & imm;
+        }
+
+        self.update_flags(destination_register);
+    }
+
+    // TODO: Break out into 'cycle' function, so we can drive it via an external UI
     pub fn run(&mut self) {
         let running = 1;
         loop {
             // TODO: What is this supposed to mean?
             // FETCH
+            // TODO: Perhaps a Instruction newtype, that Op can From?
             let instruction = self.incr_pc();
             let op = instruction >> 12;
             match Op::from_u16(op) {
                 Some(Op::Add) => self.add(instruction),
-                Some(Op::And) => {}
+                Some(Op::And) => self.bitwise_and(instruction),
                 Some(Op::Branch) => {}
                 Some(Op::Jump) => {}
                 Some(Op::JumpRegister) => {}
                 Some(Op::Load) => {}
-                Some(Op::LoadIndirect) => {}
+                Some(Op::LoadIndirect) => self.load_indirect(instruction),
                 Some(Op::LoadEffectiveAddress) => {}
                 None => error!(
                     "Failed to decode op! PC was {:x}, shifted we got {:x}",
@@ -171,7 +212,7 @@ impl Default for Machine {
     }
 }
 
-#[derive(FromPrimitive, ToPrimitive, Debug)]
+#[derive(FromPrimitive, ToPrimitive, Debug, Copy, Clone)]
 enum Register {
     R0,
     R1,
@@ -291,5 +332,20 @@ mod tests {
 
         assert_eq!(m[Register::R0], 'a' as u16);
         assert_eq!(m[Register::Cond], 1); // positive
+    }
+
+    #[test]
+    fn test_and() {
+        let mut m = Machine::new();
+        m[Register::R7] = 7;
+        m[Register::R5] = 5;
+
+        //                   AND  R2  R7_0_00_ R5
+        let instruction = 0b1010_010_111_0_00_101;
+        info!("🇸🇽: AND R7 (7) & R5(5) -> R2 (5)");
+        m.bitwise_and(instruction);
+
+        assert_eq!(m[Register::R2], 5);
+        assert_eq!(m[Register::Cond], 1);
     }
 }
