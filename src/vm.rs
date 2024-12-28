@@ -161,7 +161,7 @@ impl Machine {
             let source_register_2 = to_reg(instruction.extract(0..=3));
             self[destination_register] = self[source_register_1] & self[source_register_2];
             debug!(
-                "AND {:?} ({}) & {:?} ({}) -> {:?} ({})",
+                "AND REG {:?} ({}) & {:?} ({}) -> {:?} ({})",
                 source_register_1,
                 self[source_register_1],
                 source_register_2,
@@ -173,6 +173,14 @@ impl Machine {
             // immediate mode
             let imm = sign_extend(instruction.extract(0..=5), 5);
             self[destination_register] = self[source_register_1] & imm;
+            debug!(
+                "AND IMM {:?} ({}) & {} -> {:?} ({})",
+                source_register_1,
+                self[source_register_1],
+                imm,
+                destination_register,
+                self[destination_register]
+            );
         }
 
         self.update_flags(destination_register);
@@ -335,17 +343,31 @@ mod tests {
     }
 
     #[test]
-    fn test_and() {
+    fn test_and_reg() {
         let mut m = Machine::new();
         m[Register::R7] = 7;
         m[Register::R5] = 5;
 
         //                   AND  R2  R7_0_00_ R5
         let instruction = 0b1010_010_111_0_00_101;
-        info!("🇸🇽: AND R7 (7) & R5(5) -> R2 (5)");
+        info!("🇸🇽: AND REG R7 (7) & R5(5) -> R2 (5)");
         m.bitwise_and(instruction);
 
         assert_eq!(m[Register::R2], 5);
         assert_eq!(m[Register::Cond], 1);
+    }
+
+    #[test]
+    fn test_and_immediate() {
+        let mut m = Machine::new();
+        m[Register::R6] = 4;
+
+        //                   AND  R3  R6     9
+        let instruction = 0b1010_011_110_01001;
+        info!("🔎: AND IMM R6 (4) & 9 -> R3 ()");
+        m.bitwise_and(instruction);
+
+        assert_eq!(m[Register::R3], 0);
+        assert_eq!(m[Register::Cond], Condition::Zero.to_u16().unwrap());
     }
 }
