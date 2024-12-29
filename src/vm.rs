@@ -113,9 +113,13 @@ impl Machine {
             );
             self[destination_register] = self[source_register] + self[source_register_2];
         } else {
-            let imm5 = sign_extend(instruction.extract(0..=5), 5);
+            let imm5 = sign_extend(instruction.extract(0..=4), 5);
             //let imm5 = sign_extend(instruction & 0x1F, 5);
             self[destination_register] = self[source_register] + imm5; // Simple addition in u16
+            debug!(
+                "ADD IMM {} + {:?} -> {:?}",
+                imm5, source_register, destination_register
+            );
         }
 
         self.update_flags(destination_register);
@@ -133,7 +137,7 @@ impl Machine {
         self[Register::R7] = self[Register::PC];
         if go_long {
             let offset = sign_extend(instruction.extract(0..=10), 11);
-            self[Register::PC] += offset;
+            self[Register::PC] = offset.wrapping_add(self[Register::PC]);
             debug!(
                 "JSR {} + {} ~> {}",
                 self[Register::R7],
@@ -171,6 +175,22 @@ impl Machine {
         }
     }
 
+    fn load(&mut self, instruction: u16) {
+        let dr = instruction.extract(9..=12); // WHYYYYY
+        debug!("INSR: {:016b}", instruction);
+        debug!("DR: {:08b}", dr);
+        let destination_register = to_reg(dr);
+        let offset = instruction.extract(0..=9);
+        let signed = sign_extend(offset, 9);
+        let addr = signed.wrapping_add(self[Register::PC]);
+
+        self[destination_register] = self.mem[addr as usize];
+        debug!(
+            "LD Reading from 0x{:0x} ({}) into {:?}",
+            addr, self.mem[addr as usize], destination_register
+        );
+    }
+
     fn load_indirect(&mut self, instruction: u16) {
         /*
          ┌──────────┬───────┬─────────────────────────┐
@@ -178,6 +198,7 @@ impl Machine {
          ├──────────┼───────┼─────────────────────────┤
          │          │       │                         │
         */
+        debug!("{:016b}", instruction);
         let destination_register = to_reg(instruction.extract(9..=11));
         let pc_offset_9 = sign_extend(instruction.extract(0..=8), 9);
         let idx = self[Register::PC] + pc_offset_9;
@@ -211,8 +232,8 @@ impl Machine {
         // i need.
         // REF: Pg525
         let destination_register = to_reg(instruction.extract(9..=11));
-        let source_register_1 = to_reg(instruction.extract(6..=9));
-        let mode = instruction.extract(5..=5);
+        let source_register_1 = to_reg(instruction.extract(6..=8));
+        let immediate_mode = instruction.extract_flag(5);
         debug!("AND INSTR: {:016b}", instruction);
         debug!(
             "AND DR {:03b}, SR1 {:08b}",
@@ -220,7 +241,8 @@ impl Machine {
             instruction.extract(6..=9)
         );
 
-        if mode == 0 {
+        // TODO: flip cases
+        if immediate_mode {
             // register mode
             let source_register_2 = to_reg(instruction.extract(0..=3));
             self[destination_register] = self[source_register_1] & self[source_register_2];
@@ -264,8 +286,8 @@ impl Machine {
                 Some(Op::And) => self.bitwise_and(instruction),
                 Some(Op::Not) => self.bitwise_not(instruction),
                 Some(Op::Branch) => self.branch(instruction),
-                Some(Op::Jump) => {}
-                Some(Op::JumpRegister) => {}
+                Some(Op::Jump) => self.jump(instruction),
+                Some(Op::JumpRegister) => self.jump_register(instruction),
                 Some(Op::Load) => {}
                 Some(Op::LoadIndirect) => self.load_indirect(instruction),
                 Some(Op::LoadEffectiveAddress) => {}
@@ -399,7 +421,7 @@ mod tests {
         m[Register::PC] = 6900;
 
         //                   LDI  R0       69
-        let instruction = 0b0101_000_01000101;
+        let instruction = 0b0101_000_001000101;
         info!("🔎: LDI R0 PC + 69 -> R0");
         m.load_indirect(instruction);
 
@@ -428,8 +450,8 @@ mod tests {
         m[Register::R6] = 4;
 
         //                   AND  R3  R6     9
-        let instruction = 0b1010_011_110_01001;
-        info!("🔎: AND IMM R6 (4) & 9 -> R3 ()");
+        let instruction = 0b1010_011_110_001001;
+        info!("🔎: AND IMM R6 (4) & 9 -> R3 (0)");
         m.bitwise_and(instruction);
 
         assert_eq!(m[Register::R3], 0);
@@ -551,22 +573,21 @@ mod tests {
         assert_eq!(m[Register::PC], 0x4000);
     }
 
-    // DISABLED: nfi how two's complement works.
-    // #[test]
-    // fn jump_register_long_mode_negative_offset() {
-    //     let mut m = Machine::new();
-    //     m[Register::PC] = 0x3000;
-    //     m[Register::R7] = 0x3100;
-    //
-    //     // JSR with offset of -5
-    //     //                   JSR 1  offset=-5 (11 bits)
-    //     let instruction = 0b0100_1_11111111011;
-    //     info!("JSR jumping from {} with offset -5", 0x3100);
-    //
-    //     m.jump_register(instruction);
-    //
-    //     assert_eq!(m[Register::PC], 0x3100 - 5);
-    // }
+    #[test]
+    fn jump_register_long_mode_negative_offset() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x3000;
+        m[Register::R7] = 0x3100;
+
+        // JSR with offset of -5
+        //                   JSR 1  offset=-5 (11 bits)
+        let instruction = 0b0100_1_11111111011;
+        info!("JSR jumping from {} with offset -5", 0x3100);
+
+        m.jump_register(instruction);
+
+        assert_eq!(m[Register::PC], 0x3000 - 5);
+    }
 
     #[test]
     fn jump_register_saves_r7() {
@@ -586,5 +607,50 @@ mod tests {
         m.jump_register(instruction);
 
         assert_eq!(m[Register::R7], original_pc);
+    }
+
+    #[test]
+    fn load_positive_offset() {
+        let mut m = Machine::new();
+        // Set up initial state
+        m[Register::PC] = 0x3000;
+        // Put a known value in memory
+        m.mem[0x3005] = 420;
+
+        // Create instruction: LD R2, #5
+        //                    LD  DR PCoffset9
+        let instruction = 0b0010_010_000000101;
+        m.load(instruction);
+
+        // Verify R2 contains the value we loaded from memory
+        assert_eq!(m[Register::R2], 420);
+    }
+
+    #[test]
+    fn load_negative_offset() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x325;
+        m.mem[0x320] = 0xBEEF;
+
+        // Create instruction: LD R3, #-5
+        //                 opcode DR  PCoffset9 (negative)
+        let instruction = 0b0010_011_111111011;
+        m.load(instruction);
+
+        assert_eq!(m[Register::R3], 0xBEEF);
+    }
+
+    #[test]
+    fn load_zero_offset() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x3000;
+        m.mem[0x3000] = 0xABCD;
+
+        // Create instruction: LD R4, #0
+        //                 opcode DR  PCoffset9
+        let instruction = 0b0010_100_000000000;
+        m.load(instruction);
+
+        assert_eq!(m[Register::R4], 0xABCD);
     }
 }

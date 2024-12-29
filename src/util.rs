@@ -7,7 +7,8 @@ pub trait Extractable {
 
 impl Extractable for u16 {
     fn extract(self, range: std::ops::RangeInclusive<u8>) -> u16 {
-        let mask = ((1 << (range.end() - range.start())) - 1) << range.start();
+        let bits = (range.end() - range.start() + 1) as u16;
+        let mask = ((1u16 << bits) - 1) << range.start();
         (self & mask) >> range.start()
     }
 
