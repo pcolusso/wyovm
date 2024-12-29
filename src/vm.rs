@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::FromPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
 use std::ops::{Index, IndexMut};
-use tracing::{debug, error};
+use tracing::{debug, error, field::debug};
 
 use crate::util::Extractable;
 
@@ -121,6 +121,27 @@ impl Machine {
         self.update_flags(destination_register);
     }
 
+    fn branch(&mut self, instruction: u16) {
+        debug!("{:016b}", instruction);
+        let n = instruction.extract_flag(11);
+        let z = instruction.extract_flag(10);
+        let p = instruction.extract_flag(9);
+        let pc_offset = sign_extend(instruction.extract(0..=8), 9);
+        let c = self[Register::Cond];
+
+        let bn = n && c == Condition::Negative.to_u16().unwrap();
+        let bp = p && c == Condition::Positive.to_u16().unwrap();
+        let bz = z && c == Condition::Zero.to_u16().unwrap();
+
+        dbg!(n, z, p, pc_offset);
+
+        debug!("BR n {} p {} z {} c {}", bn, bp, bz, self[Register::Cond]);
+        if bn || bp || bz {
+            self[Register::PC] += pc_offset;
+            debug!("BR ~> {:0x}", self[Register::PC]);
+        }
+    }
+
     fn load_indirect(&mut self, instruction: u16) {
         /*
          ┌──────────┬───────┬─────────────────────────┐
@@ -212,6 +233,7 @@ impl Machine {
             match Op::from_u16(op) {
                 Some(Op::Add) => self.add(instruction),
                 Some(Op::And) => self.bitwise_and(instruction),
+                Some(Op::Not) => self.bitwise_not(instruction),
                 Some(Op::Branch) => {}
                 Some(Op::Jump) => {}
                 Some(Op::JumpRegister) => {}
@@ -402,5 +424,53 @@ mod tests {
             // +ve?
             "Condition flag"
         );
+    }
+
+    #[test]
+    fn branch_positive() {
+        let mut m = Machine::new();
+        let offset = 0x44;
+        m[Register::PC] = 0x23;
+        let dest = offset + m[Register::PC];
+        m[Register::Cond] = Condition::Positive.to_u16().unwrap();
+
+        //                    BR n z p
+        let instruction = 0b0000_0_0_1_000000000 + offset;
+        info!("BR + {:0x} ~> {:0x}", m[Register::PC], dest);
+        m.branch(instruction);
+
+        assert_eq!(m[Register::PC], dest);
+    }
+
+    #[test]
+    fn branch_negative() {
+        let mut m = Machine::new();
+        let offset = 12_i16 as u8; // can't seem to branch negative.
+        m[Register::PC] = 52;
+        let dest = 64;
+        m[Register::Cond] = Condition::Negative.to_u16().unwrap();
+
+        //                    BR n z p
+        let instruction: u16 = 0b0000_1_0_0_000000000 | offset as u16;
+        info!("BR + {:0x} ~> {:0x}", m[Register::PC], dest);
+        m.branch(instruction);
+
+        assert_eq!(m[Register::PC], dest);
+    }
+
+    #[test]
+    fn do_not_branch() {
+        let mut m = Machine::new();
+        let offset = 12_i16 as u8; // can't seem to branch negative.
+        m[Register::PC] = 52;
+        let dest = 64;
+        m[Register::Cond] = Condition::Positive.to_u16().unwrap();
+
+        //                    BR n z p
+        let instruction = 0b0000_1_0_0_000000000 | offset as u16;
+        info!("BR + {:0x} ~> {:0x}", m[Register::PC], dest);
+        m.branch(instruction);
+
+        assert_eq!(m[Register::PC], 52);
     }
 }

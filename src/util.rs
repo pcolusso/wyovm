@@ -2,12 +2,17 @@ use std::ops::RangeInclusive;
 
 pub trait Extractable {
     fn extract(self, range: RangeInclusive<u8>) -> Self;
+    fn extract_flag(self, index: usize) -> bool;
 }
 
 impl Extractable for u16 {
     fn extract(self, range: std::ops::RangeInclusive<u8>) -> u16 {
         let mask = ((1 << (range.end() - range.start())) - 1) << range.start();
         (self & mask) >> range.start()
+    }
+
+    fn extract_flag(self, index: usize) -> bool {
+        (self & (1 << index)) != 0
     }
 }
 
