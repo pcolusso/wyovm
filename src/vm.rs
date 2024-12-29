@@ -8,13 +8,40 @@ use std::{
     io::{self, Read, Write},
     ops::{Index, IndexMut},
 };
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
-use crate::util::Extractable;
+use crate::util::{sign_extend, Extractable};
 
 const MEM_MAX: usize = 1 << 16;
 const PC_START: u16 = 0x3000;
 
+#[derive(FromPrimitive, ToPrimitive, Debug)]
+enum Op {
+    Branch = 0x0,         // BR
+    Add,                  // ADD
+    Load,                 // LD
+    Store,                // ST
+    JumpRegister,         // JSR
+    And,                  // AND
+    LoadRegister,         // LDR
+    StoreRegister,        // STR
+    Unused,               // RTI
+    Not,                  // NOT
+    LoadIndirect,         // LDI
+    StoreIndirect,        // STI
+    Jump,                 // JMP
+    Reserved,             // RES
+    LoadEffectiveAddress, // LEA
+    Trap,                 // TRAP
+}
+
+// TODO: if this register is never used for anything else, maybe we could change this into an enum?
+#[derive(ToPrimitive, FromPrimitive, Debug, PartialEq)]
+enum Condition {
+    Positive = 1 << 0,
+    Negative = 1 << 1,
+    Zero = 1 << 2,
+}
 #[derive(Debug, ToPrimitive, FromPrimitive)]
 enum TrapCode {
     GetChar = 0x20,
@@ -25,6 +52,20 @@ enum TrapCode {
     Halt,
 }
 
+#[derive(FromPrimitive, ToPrimitive, Debug, Copy, Clone)]
+enum Register {
+    R0,
+    R1,
+    R2,
+    R3,
+    R4,
+    R5,
+    R6,
+    R7,
+    PC,
+    Cond,
+    Count,
+}
 pub struct Machine {
     mem: [u16; MEM_MAX],
     reg: [u16; 11],
@@ -46,16 +87,6 @@ impl IndexMut<Register> for Machine {
     fn index_mut(&mut self, register: Register) -> &mut Self::Output {
         &mut self.reg[register as usize]
     }
-}
-
-// further reading: https://en.wikipedia.org/wiki/Two%27s_complement
-fn sign_extend(x: u16, bit_count: i32) -> u16 {
-    let mut y = x;
-    if y >> (bit_count - 1) & 1 != 0 {
-        y |= 0xFFFFu16 << bit_count;
-    }
-    debug!("+/- {:#016b} -> {:#016b}", x, y);
-    y
 }
 
 impl Machine {
@@ -111,9 +142,28 @@ impl Machine {
         } as u16;
     }
 
+    // Convert the Condition register into the enum
     fn get_condition(&self) -> Condition {
         Condition::from_u16(self[Register::Cond]).expect("Invalid value in condition register")
     }
+
+    // Indirection for accessing memory. We need to add memory-mapped regions for keyboard
+    // input.
+    fn mem_read(&mut self, addr: u16) -> u16 {
+        if addr == 0xFE00 {
+            let mut buffer = [0; 1];
+            io::stdin()
+                .read_exact(&mut buffer)
+                .expect("Failed to read input");
+            self.mem[0xFE00] = 1 << 15;
+            self.mem[0xFE02] = buffer[0] as u16;
+        } else {
+            self.mem[0xFE00] = 0;
+        }
+        self.mem[addr as usize]
+    }
+
+    // MARK: Instruction implementations
 
     fn add(&mut self, instruction: u16) {
         // Add has two modes, immediate and register mode.
@@ -219,10 +269,12 @@ impl Machine {
         let signed = sign_extend(offset, 9);
         let addr = signed.wrapping_add(self[Register::PC]);
 
-        self[destination_register] = self.mem[addr as usize];
+        self[destination_register] = self.mem_read(addr);
         debug!(
             "LD Reading from 0x{:0x} ({}) into {:?}",
-            addr, self.mem[addr as usize], destination_register
+            addr,
+            self.mem_read(addr),
+            destination_register
         );
     }
 
@@ -244,7 +296,7 @@ impl Machine {
             idx,
             destination_register
         );
-        self[destination_register] = self.mem[idx as usize];
+        self[destination_register] = self.mem_read(idx);
         self.update_flags(self[destination_register]);
     }
 
@@ -264,11 +316,6 @@ impl Machine {
         );
     }
 
-    fn return_from_interrupt(&mut self, instruction: u16) {
-        assert!(instruction.extract(12..=15) == 0b1000);
-        panic!("RTI not implemented!");
-    }
-
     fn store(&mut self, instruction: u16) {
         assert!(instruction.extract(12..=15) == 0b0011);
         let sr = instruction.extract(9..=11);
@@ -276,6 +323,10 @@ impl Machine {
         let offset = sign_extend(instruction.extract(0..=8), 9);
         let addr = offset.wrapping_add(self[Register::PC]);
         self.mem[addr as usize] = self[source_register];
+        debug!(
+            "ST {:?} ({}) -> 0x{:0x}",
+            source_register, self[source_register], addr
+        );
     }
 
     fn store_indirect(&mut self, instruction: u16) {
@@ -284,7 +335,7 @@ impl Machine {
         let source_register = to_reg(sr);
         let offset = sign_extend(instruction.extract(0..=8), 9);
         let addr = offset.wrapping_add(self[Register::PC]);
-        let actual_address = self.mem[addr as usize];
+        let actual_address = self.mem_read(addr);
         self.mem[actual_address as usize] = self[source_register];
     }
 
@@ -319,7 +370,7 @@ impl Machine {
         // REF: Pg525
         let destination_register = to_reg(instruction.extract(9..=11));
         let source_register_1 = to_reg(instruction.extract(6..=8));
-        let immediate_mode = instruction.extract_flag(5);
+        let register_mode = instruction.extract_flag(5);
         debug!("AND INSTR: {:016b}", instruction);
         debug!(
             "AND DR {:03b}, SR1 {:08b}",
@@ -327,8 +378,7 @@ impl Machine {
             instruction.extract(6..=9)
         );
 
-        // TODO: flip cases
-        if immediate_mode {
+        if register_mode {
             // register mode
             let source_register_2 = to_reg(instruction.extract(0..=3));
             self[destination_register] = self[source_register_1] & self[source_register_2];
@@ -389,6 +439,7 @@ impl Machine {
                 let addr = self[Register::R0] as usize;
                 let mut c: &[u16] = &self.mem[addr..];
 
+                // TODO: do better
                 while let Some(&word) = c.first() {
                     if word == 0 {
                         break; // Stop if the current word is zero
@@ -427,6 +478,13 @@ impl Machine {
     pub fn cycle(&mut self) {
         // TODO: Perhaps a Instruction newtype, that Op can From?
         let instruction = self.incr_pc();
+        trace!("CYC: {:016b} 0x{:0x}", instruction, instruction);
+        trace!(
+            "PC: 0x{:0x} R0: 0x{:0x} R1 0x{:0x}",
+            self[Register::PC],
+            self[Register::R0],
+            self[Register::R1]
+        );
         let op = instruction >> 12;
         match Op::from_u16(op) {
             Some(Op::Add) => self.add(instruction),
@@ -459,52 +517,9 @@ impl Default for Machine {
     }
 }
 
-#[derive(FromPrimitive, ToPrimitive, Debug, Copy, Clone)]
-enum Register {
-    R0,
-    R1,
-    R2,
-    R3,
-    R4,
-    R5,
-    R6,
-    R7,
-    PC,
-    Cond,
-    Count,
-}
-
 // Helper function to hammer a u16 (likely masked) into a Register.
 fn to_reg(value: u16) -> Register {
     Register::from_u16(value).expect("Couldn't find register with value. Has it been shifted?")
-}
-
-#[derive(FromPrimitive, ToPrimitive, Debug)]
-enum Op {
-    Branch = 0x0,         // BR
-    Add,                  // ADD
-    Load,                 // LD
-    Store,                // ST
-    JumpRegister,         // JSR
-    And,                  // AND
-    LoadRegister,         // LDR
-    StoreRegister,        // STR
-    Unused,               // RTI
-    Not,                  // NOT
-    LoadIndirect,         // LDI
-    StoreIndirect,        // STI
-    Jump,                 // JMP
-    Reserved,             // RES
-    LoadEffectiveAddress, // LEA
-    Trap,                 // TRAP
-}
-
-// TODO: if this register is never used for anything else, maybe we could change this into an enum?
-#[derive(ToPrimitive, FromPrimitive, Debug, PartialEq)]
-enum Condition {
-    Positive = 1 << 0,
-    Negative = 1 << 1,
-    Zero = 1 << 2,
 }
 
 #[cfg(test)]

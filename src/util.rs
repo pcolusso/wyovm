@@ -17,6 +17,15 @@ impl Extractable for u16 {
     }
 }
 
+// further reading: https://en.wikipedia.org/wiki/Two%27s_complement
+pub fn sign_extend(x: u16, bit_count: i32) -> u16 {
+    let mut y = x;
+    if y >> (bit_count - 1) & 1 != 0 {
+        y |= 0xFFFFu16 << bit_count;
+    }
+    y
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
