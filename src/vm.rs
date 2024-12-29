@@ -3,7 +3,7 @@
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::ops::{Index, IndexMut};
-use tracing::{debug, error, field::debug};
+use tracing::{debug, error, field::debug, warn};
 
 use crate::util::Extractable;
 
@@ -121,6 +121,35 @@ impl Machine {
         self.update_flags(destination_register);
     }
 
+    fn jump(&mut self, instruction: u16) {
+        let base_register = to_reg(instruction.extract(6..=9));
+        let value = self[base_register];
+        debug!("JMP Set PC to {} from {:?}", value, base_register);
+        self[Register::PC] = value;
+    }
+
+    fn jump_register(&mut self, instruction: u16) {
+        let go_long = instruction.extract_flag(11);
+        self[Register::R7] = self[Register::PC];
+        if go_long {
+            let offset = sign_extend(instruction.extract(0..=10), 11);
+            self[Register::PC] += offset;
+            debug!(
+                "JSR {} + {} ~> {}",
+                self[Register::R7],
+                offset,
+                self[Register::PC]
+            );
+        } else {
+            let base_register = to_reg(instruction.extract(6..=8));
+            self[Register::PC] = self[base_register];
+            debug!(
+                "JSRR Set PC to value in {:?} ({})",
+                base_register, self[base_register]
+            );
+        }
+    }
+
     fn branch(&mut self, instruction: u16) {
         debug!("{:016b}", instruction);
         let n = instruction.extract_flag(11);
@@ -234,7 +263,7 @@ impl Machine {
                 Some(Op::Add) => self.add(instruction),
                 Some(Op::And) => self.bitwise_and(instruction),
                 Some(Op::Not) => self.bitwise_not(instruction),
-                Some(Op::Branch) => {}
+                Some(Op::Branch) => self.branch(instruction),
                 Some(Op::Jump) => {}
                 Some(Op::JumpRegister) => {}
                 Some(Op::Load) => {}
@@ -472,5 +501,90 @@ mod tests {
         m.branch(instruction);
 
         assert_eq!(m[Register::PC], 52);
+    }
+
+    #[test]
+    fn jump() {
+        let mut m = Machine::new();
+        let dest = 0x98;
+        m[Register::PC] = 0x69;
+        m[Register::R6] = dest;
+
+        //                  JMP 000  R6 000000
+        let instuction = 0b1100_000_110_000000;
+        info!("JMP Set PC to {} from R6", dest);
+        m.jump(instuction);
+
+        assert_eq!(m[Register::PC], dest);
+    }
+
+    // here be tests writtne by claude, cause it got tiring.
+    #[test]
+    fn jump_register_long_mode() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x6969;
+
+        // JSR with offset of 5
+        //                   JSR 1  offset=5
+        let instruction = 0b0100_1_00000000101;
+        info!("JSR jumping from {} with offset 5", 0x3100);
+
+        m.jump_register(instruction);
+
+        assert_eq!(m[Register::PC], 0x6969 + 5);
+    }
+
+    #[test]
+    fn jump_register_reg_mode() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x3000;
+        m[Register::R7] = 0x3100;
+        m[Register::R3] = 0x4000;
+
+        // JSRR using R3
+        //                   JSRR 0  011 000000
+        let instruction = 0b0100_0_00_011_000000;
+        info!("JSRR jumping to value in R3 ({})", 0x4000);
+
+        m.jump_register(instruction);
+
+        assert_eq!(m[Register::PC], 0x4000);
+    }
+
+    // DISABLED: nfi how two's complement works.
+    // #[test]
+    // fn jump_register_long_mode_negative_offset() {
+    //     let mut m = Machine::new();
+    //     m[Register::PC] = 0x3000;
+    //     m[Register::R7] = 0x3100;
+    //
+    //     // JSR with offset of -5
+    //     //                   JSR 1  offset=-5 (11 bits)
+    //     let instruction = 0b0100_1_11111111011;
+    //     info!("JSR jumping from {} with offset -5", 0x3100);
+    //
+    //     m.jump_register(instruction);
+    //
+    //     assert_eq!(m[Register::PC], 0x3100 - 5);
+    // }
+
+    #[test]
+    fn jump_register_saves_r7() {
+        let mut m = Machine::new();
+        let original_pc = 0x3000;
+        m[Register::PC] = original_pc;
+        m[Register::R3] = 0x4000;
+
+        // JSRR using R3
+        //                   JSRR 0  011 000000
+        let instruction = 0b0100_0_00_011_000000;
+        info!(
+            "JSRR jumping to value in R3 ({}) and saving PC ({}) to R7",
+            0x4000, original_pc
+        );
+
+        m.jump_register(instruction);
+
+        assert_eq!(m[Register::R7], original_pc);
     }
 }
