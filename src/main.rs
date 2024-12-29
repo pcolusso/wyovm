@@ -1,3 +1,5 @@
+use std::{fs::File, io::Read};
+
 use clap::Parser;
 use thiserror::Error;
 use tracing::{error, info};
@@ -20,9 +22,9 @@ fn main() -> Result<(), AppError> {
     // TODO: https://www.jmeiners.com/lc3-vm/#:setup
 
     let app = App::parse();
-    let code = std::fs::read(app.image_path)?;
-
     let mut machine = Machine::new();
+    machine.load_image(File::open(app.image_path)?);
+    machine.run();
 
     info!("done!");
 

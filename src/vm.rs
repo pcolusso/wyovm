@@ -1,21 +1,34 @@
 #![allow(dead_code)]
 
+use byteorder::{BigEndian, ReadBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive, WrappingAdd};
+use num_traits::{FromPrimitive, ToPrimitive};
 use std::{
     cmp::Ordering,
+    io::{self, Read, Write},
     ops::{Index, IndexMut},
 };
-use tracing::{debug, error, field::debug, warn};
+use tracing::{debug, error};
 
 use crate::util::Extractable;
 
 const MEM_MAX: usize = 1 << 16;
 const PC_START: u16 = 0x3000;
 
+#[derive(Debug, ToPrimitive, FromPrimitive)]
+enum TrapCode {
+    GetChar = 0x20,
+    Out,
+    Put,
+    In,
+    PutSP,
+    Halt,
+}
+
 pub struct Machine {
     mem: [u16; MEM_MAX],
     reg: [u16; 11],
+    running: bool,
 }
 
 // not too sure if worthwhile implementing Index<u16> for mem access.
@@ -49,7 +62,8 @@ impl Machine {
     pub fn new() -> Self {
         let mem = [0; MEM_MAX];
         let reg = [0; 11];
-        let mut machine = Self { mem, reg };
+        let running = true;
+        let mut machine = Self { mem, reg, running };
 
         // TODO:: this may be better moved into the run method.
         // since exactly one condition flag should be set at any given time, set the Z flag
@@ -58,6 +72,25 @@ impl Machine {
         machine[Register::PC] = PC_START;
 
         machine
+    }
+
+    pub fn load_image(&mut self, mut source: impl Read) {
+        let origin = source
+            .read_u16::<BigEndian>()
+            .expect("can't read origin")
+            .rotate_right(8); // BE -> LE
+        let max_read = MEM_MAX - origin as usize;
+
+        let mut p = origin as usize;
+        for _ in 0..max_read {
+            match source.read_u16::<BigEndian>() {
+                Ok(word) => {
+                    self.mem[p] = word.rotate_right(8);
+                    p += 1;
+                }
+                Err(_) => break, // Stop reading on any error
+            }
+        }
     }
 
     // Simulates a mem_read(reg[PC]++)
@@ -160,7 +193,6 @@ impl Machine {
     }
 
     fn branch(&mut self, instruction: u16) {
-        debug!("{:016b}", instruction);
         let n = instruction.extract_flag(11);
         let z = instruction.extract_flag(10);
         let p = instruction.extract_flag(9);
@@ -171,11 +203,9 @@ impl Machine {
         let bp = p && c == Condition::Positive.to_u16().unwrap();
         let bz = z && c == Condition::Zero.to_u16().unwrap();
 
-        dbg!(n, z, p, pc_offset);
-
         debug!("BR n {} p {} z {} c {}", bn, bp, bz, self[Register::Cond]);
         if bn || bp || bz {
-            self[Register::PC] += pc_offset;
+            self[Register::PC] = pc_offset.wrapping_add(self[Register::PC]);
             debug!("BR ~> {:0x}", self[Register::PC]);
         }
     }
@@ -258,6 +288,17 @@ impl Machine {
         self.mem[actual_address as usize] = self[source_register];
     }
 
+    fn store_base(&mut self, instruction: u16) {
+        assert!(instruction.extract(12..=15) == 0b0111);
+        let sr = instruction.extract(9..=11);
+        let source_register = to_reg(sr);
+        let br = instruction.extract(6..=8);
+        let base_register = to_reg(br);
+        let offset = sign_extend(instruction.extract(0..=5), 6);
+        let addr = offset.wrapping_add(self[base_register]);
+        self.mem[addr as usize] = self[source_register];
+    }
+
     fn bitwise_not(&mut self, instruction: u16) {
         let destination_register = to_reg(instruction.extract(9..=11));
         let source_register = to_reg(instruction.extract(6..=8));
@@ -317,31 +358,97 @@ impl Machine {
         self.update_flags(self[destination_register]);
     }
 
-    // TODO: Break out into 'cycle' function, so we can drive it via an external UI
-    pub fn run(&mut self) {
-        let running = 1;
-        loop {
-            // TODO: What is this supposed to mean?
-            // FETCH
-            // TODO: Perhaps a Instruction newtype, that Op can From?
-            let instruction = self.incr_pc();
-            let op = instruction >> 12;
-            match Op::from_u16(op) {
-                Some(Op::Add) => self.add(instruction),
-                Some(Op::And) => self.bitwise_and(instruction),
-                Some(Op::Not) => self.bitwise_not(instruction),
-                Some(Op::Branch) => self.branch(instruction),
-                Some(Op::Jump) => self.jump(instruction),
-                Some(Op::JumpRegister) => self.jump_register(instruction),
-                Some(Op::Load) => self.load(instruction),
-                Some(Op::LoadIndirect) => self.load_indirect(instruction),
-                Some(Op::LoadEffectiveAddress) => {}
-                None => error!(
-                    "Failed to decode op! PC was {:x}, shifted we got {:x}",
-                    instruction, op
-                ),
-                _ => todo!(),
+    fn trap(&mut self, instruction: u16) {
+        assert!(instruction.extract(12..=15) == 0b1111);
+        let vec = instruction.extract(0..=7);
+        self[Register::R7] = self[Register::PC];
+        match TrapCode::from_u16(vec) {
+            Some(TrapCode::GetChar) => {
+                let mut buffer = [0; 1];
+                io::stdin()
+                    .read_exact(&mut buffer)
+                    .expect("Failed to read input");
+                self[Register::R0] = buffer[0] as u16;
+                self.update_flags(self[Register::R0]);
             }
+            Some(TrapCode::Out) => {
+                print!("{}", self[Register::R0]);
+                io::stdout().flush().expect("plumbing failure");
+            }
+            Some(TrapCode::In) => {
+                print!("Enter a character: ");
+                let mut buffer = [0; 1];
+                io::stdin()
+                    .read_exact(&mut buffer)
+                    .expect("Failed to read input");
+                print!("{}", buffer[0]);
+                self[Register::R0] = buffer[0] as u16;
+                self.update_flags(self[Register::R0]);
+            }
+            Some(TrapCode::PutSP) => {
+                let addr = self[Register::R0] as usize;
+                let mut c: &[u16] = &self.mem[addr..];
+
+                while let Some(&word) = c.first() {
+                    if word == 0 {
+                        break; // Stop if the current word is zero
+                    }
+
+                    // Extract and print the first char (lower byte)
+                    let char1 = (word & 0xFF) as u8 as char;
+                    print!("{}", char1);
+
+                    // Extract and print the second char (upper byte), if it's not zero
+                    let char2 = (word >> 8) as u8;
+                    if char2 != 0 {
+                        print!("{}", char2 as char);
+                    }
+
+                    // Move to the next memory location
+                    c = &c[1..];
+                }
+
+                // Flush the output to ensure all characters are printed
+                io::stdout().flush().expect("Failed to flush stdout");
+            }
+            Some(TrapCode::Halt) => {}
+            None => panic!("bad trap"),
+            _ => unimplemented!(),
+        }
+    }
+
+    pub fn run(&mut self) {
+        while self.running {
+            self.cycle();
+            std::thread::sleep(std::time::Duration::from_millis(33));
+        }
+    }
+
+    pub fn cycle(&mut self) {
+        // TODO: Perhaps a Instruction newtype, that Op can From?
+        let instruction = self.incr_pc();
+        let op = instruction >> 12;
+        match Op::from_u16(op) {
+            Some(Op::Add) => self.add(instruction),
+            Some(Op::And) => self.bitwise_and(instruction),
+            Some(Op::Not) => self.bitwise_not(instruction),
+            Some(Op::Branch) => self.branch(instruction),
+            Some(Op::Jump) => self.jump(instruction),
+            Some(Op::JumpRegister) => self.jump_register(instruction),
+            Some(Op::Load) => self.load(instruction),
+            Some(Op::LoadIndirect) => self.load_indirect(instruction),
+            Some(Op::LoadEffectiveAddress) => self.load_effective_address(instruction),
+            Some(Op::Store) => self.store(instruction),
+            Some(Op::StoreRegister) => self.store(instruction),
+            Some(Op::StoreIndirect) => self.store_indirect(instruction),
+            Some(Op::LoadRegister) => todo!(),
+            Some(Op::Unused) => panic!("Unused"),
+            Some(Op::Reserved) => panic!("Reserved"),
+            Some(Op::Trap) => self.trap(instruction),
+            None => error!(
+                "Failed to decode op! PC was {:x}, shifted we got {:x}",
+                instruction, op
+            ),
         }
     }
 }
@@ -849,5 +956,72 @@ mod tests {
 
         // Check if value was stored at the location pointed to
         assert_eq!(m.mem[target_addr as usize], 0xCAFE);
+    }
+
+    #[test]
+    fn store_base() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::R2] = 0x3000; // Base register value
+        m[Register::R4] = 0xDEAD; // Value to store
+        let offset = 0x0A; // Positive offset
+
+        //                  STR   R4    R2   offset
+        let instruction = 0b0111_100_010_001010;
+        info!(
+            "STR R4 to memory location R2 + {:#x} ({:#x})",
+            offset,
+            m[Register::R2].wrapping_add(offset)
+        );
+
+        m.store_base(instruction);
+
+        // Check if value was stored at correct memory location
+        assert_eq!(m.mem[m[Register::R2].wrapping_add(offset) as usize], 0xDEAD);
+    }
+
+    #[test]
+    fn store_base_negative_offset() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::R1] = 0x4000; // Base register value
+        m[Register::R3] = 0xFACE; // Value to store
+        let offset = -8i16 as u16; // Negative offset
+
+        //                  STR   R3    R1   offset (111000 in binary)
+        let instruction = 0b0111_011_001_111000;
+        info!(
+            "STR R3 to memory location R1 - 8 ({:#x})",
+            m[Register::R1].wrapping_add(offset)
+        );
+
+        m.store_base(instruction);
+
+        // Check if value was stored at correct memory location
+        assert_eq!(m.mem[m[Register::R1].wrapping_add(offset) as usize], 0xFACE);
+    }
+
+    #[test]
+    fn store_base_same_register() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::R5] = 0x2000; // Both base and value to store
+        let offset = 0x0F; // Positive offset
+
+        //                  STR   R5    R5   offset
+        let instruction = 0b0111_101_101_001111;
+        info!(
+            "STR R5 to memory location R5 + {:#x} ({:#x})",
+            offset,
+            m[Register::R5].wrapping_add(offset)
+        );
+
+        m.store_base(instruction);
+
+        // Check if value was stored at correct memory location
+        assert_eq!(m.mem[m[Register::R5].wrapping_add(offset) as usize], 0x2000);
     }
 }
