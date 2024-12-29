@@ -3,6 +3,8 @@
 [source here](https://www.jmeiners.com/lc3-vm/)
 
 
+status: mostly done, need to go and add memory regions for keyboard, seem the samples need them.
+
 ## Lessons
 
  - `Index` and `IndexMut` are really handy.
@@ -16,6 +18,3 @@
  - I'm spoiled a bit by codecrafters, and their piecemeal tests for quick wins. I've tried to replicate this by testing my code (hey maybe there's a good lesson in that). However, this leaves an impasse, am I testing what *I* think is correct, or what is *actually* correct.
  - The book's use of clever C code is a little unhelpful if you're not learning C. Sure, these are normal and code you'd expect to see if you're reading C, but for those wanting to just, write your own virtual machine, it's a bit of extra friction.
 
-## Ideas
- - Visualiser?
- - Finish this project?
