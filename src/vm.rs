@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 
 use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
-use std::ops::{Index, IndexMut};
+use num_traits::{FromPrimitive, ToPrimitive, WrappingAdd};
+use std::{
+    cmp::Ordering,
+    ops::{Index, IndexMut},
+};
 use tracing::{debug, error, field::debug, warn};
 
 use crate::util::Extractable;
@@ -65,16 +68,18 @@ impl Machine {
     }
 
     // update the condition register
-    fn update_flags(&mut self, register: Register) {
-        let value = self[register];
-        self[Register::Cond] = if value == 0 {
-            //COUNTER STRIKE
-            Condition::Zero as u16
-        } else if value >> 15 == 1 {
-            Condition::Negative as u16
-        } else {
-            Condition::Positive as u16
-        }
+    fn update_flags(&mut self, value: u16) {
+        let value = value as i8;
+        debug!("COND: Got {}", value);
+        self[Register::Cond] = match value.cmp(&0) {
+            Ordering::Equal => Condition::Zero,
+            Ordering::Less => Condition::Negative,
+            Ordering::Greater => Condition::Positive,
+        } as u16;
+    }
+
+    fn get_condition(&self) -> Condition {
+        Condition::from_u16(self[Register::Cond]).expect("Invalid value in condition register")
     }
 
     fn add(&mut self, instruction: u16) {
@@ -121,8 +126,8 @@ impl Machine {
                 imm5, source_register, destination_register
             );
         }
-
-        self.update_flags(destination_register);
+        // Is this correct?
+        self.update_flags(self[destination_register]);
     }
 
     fn jump(&mut self, instruction: u16) {
@@ -210,7 +215,23 @@ impl Machine {
             destination_register
         );
         self[destination_register] = self.mem[idx as usize];
-        self.update_flags(destination_register);
+        self.update_flags(self[destination_register]);
+    }
+
+    fn load_effective_address(&mut self, instruction: u16) {
+        assert!(instruction.extract(12..=15) == 0b1110);
+        let dr = instruction.extract(9..=11);
+        let destination_register = to_reg(dr);
+        let offset = sign_extend(instruction.extract(0..=8), 9);
+        let addr = offset.wrapping_add(self[Register::PC]);
+        self[destination_register] = addr;
+        self.update_flags(addr);
+        debug!(
+            "LEA 0x{:0x} -> {:?} ({:?})",
+            addr,
+            destination_register,
+            self[Register::Cond]
+        );
     }
 
     fn bitwise_not(&mut self, instruction: u16) {
@@ -224,7 +245,7 @@ impl Machine {
             destination_register,
             self[destination_register]
         );
-        self.update_flags(destination_register);
+        self.update_flags(self[destination_register]);
     }
 
     fn bitwise_and(&mut self, instruction: u16) {
@@ -269,7 +290,7 @@ impl Machine {
             );
         }
 
-        self.update_flags(destination_register);
+        self.update_flags(self[destination_register]);
     }
 
     // TODO: Break out into 'cycle' function, so we can drive it via an external UI
@@ -288,7 +309,7 @@ impl Machine {
                 Some(Op::Branch) => self.branch(instruction),
                 Some(Op::Jump) => self.jump(instruction),
                 Some(Op::JumpRegister) => self.jump_register(instruction),
-                Some(Op::Load) => {}
+                Some(Op::Load) => self.load(instruction),
                 Some(Op::LoadIndirect) => self.load_indirect(instruction),
                 Some(Op::LoadEffectiveAddress) => {}
                 None => error!(
@@ -348,7 +369,7 @@ enum Op {
 }
 
 // TODO: if this register is never used for anything else, maybe we could change this into an enum?
-#[derive(ToPrimitive, FromPrimitive, Debug)]
+#[derive(ToPrimitive, FromPrimitive, Debug, PartialEq)]
 enum Condition {
     Positive = 1 << 0,
     Negative = 1 << 1,
@@ -652,5 +673,60 @@ mod tests {
         m.load(instruction);
 
         assert_eq!(m[Register::R4], 0xABCD);
+    }
+
+    #[test]
+    fn load_effective_address_positive_offset() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x3000;
+
+        //                  LEA R1 offset=0x20
+        let instruction = 0b1110_001_000100000;
+        info!("LEA R1, #32 (Positive offset)");
+        m.load_effective_address(instruction);
+
+        assert_eq!(m[Register::R1], 0x3020);
+        assert_eq!(m.get_condition(), Condition::Positive); // Should be positive
+    }
+
+    #[test]
+    fn load_effective_address_negative_offset() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x3000;
+
+        //                  LEA R2 offset=-16
+        let instruction = 0b1110_010_111110000;
+        info!("LEA R2, #-16 (Negative offset)");
+        m.load_effective_address(instruction);
+
+        assert_eq!(m[Register::R2], 0x2FF0); // 0x3000 + 1 - 16
+        assert_eq!(m.get_condition(), Condition::Negative); // Should be negative
+    }
+
+    #[test]
+    fn load_effective_address_zero_result() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x0011;
+
+        let instruction = 0b1110_011_111101111;
+        info!("LEA R3, #-17 (Should result in 0)");
+        m.load_effective_address(instruction);
+
+        assert_eq!(m[Register::R3], 0x0000);
+        assert_eq!(m.get_condition(), Condition::Zero); // Should be zero
+    }
+
+    #[test]
+    fn load_effective_address_max_positive_offset() {
+        let mut m = Machine::new();
+        m[Register::PC] = 0x3001;
+
+        //                  LEA R4 offset=255
+        let instruction = 0b1110_100_011111111;
+        info!("LEA R4, #255 (Maximum positive offset)");
+        m.load_effective_address(instruction);
+
+        assert_eq!(m[Register::R4], 0x3100);
+        assert_eq!(m.get_condition(), Condition::Zero);
     }
 }
