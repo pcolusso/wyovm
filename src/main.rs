@@ -24,7 +24,30 @@ fn main() -> Result<(), AppError> {
     let app = App::parse();
     let mut machine = Machine::new();
     machine.load_image(File::open(app.image_path)?);
-    machine.run();
+
+    #[cfg(feature = "ui")]
+    {
+        use iced::Task;
+        use wyovm::ui::*;
+
+        iced::application("wyovm", State::update, State::view)
+            .theme(|_s| iced::Theme::CatppuccinMacchiato)
+            .settings(iced::Settings {
+                default_text_size: iced::Pixels(22.0),
+                default_font: iced::Font::MONOSPACE,
+                ..Default::default()
+            })
+            .run_with(move || {
+                let state = State { machine };
+                (state, Task::none())
+            })
+            .expect("Failed to start UI");
+    }
+
+    #[cfg(not(feature = "ui"))]
+    {
+        machine.run();
+    }
 
     info!("done!");
 

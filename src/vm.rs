@@ -12,8 +12,8 @@ use tracing::{debug, error, trace};
 
 use crate::util::{sign_extend, Extractable};
 
-const MEM_MAX: usize = 1 << 16;
-const PC_START: u16 = 0x3000;
+pub const MEM_MAX: usize = 1 << 16;
+pub const PC_START: u16 = 0x3000;
 
 #[derive(FromPrimitive, ToPrimitive, Debug)]
 enum Op {
@@ -67,7 +67,7 @@ enum Register {
     Count,
 }
 pub struct Machine {
-    mem: [u16; MEM_MAX],
+    pub mem: [u16; MEM_MAX],
     reg: [u16; 11],
     running: bool,
 }
@@ -1038,5 +1038,13 @@ mod tests {
 
         // Check if value was stored at correct memory location
         assert_eq!(m.mem[m[Register::R5].wrapping_add(offset) as usize], 0x2000);
+    }
+
+    #[test]
+    fn can_read_origin() {
+        let mut m = Machine::new();
+        let f = std::fs::File::open("samples/hello_world.obj").expect("hello world sample lost");
+        m.load_image(f);
+        assert_eq!(m.mem[0x3000], 0xE206, "start instr is not LEA R1 x3007");
     }
 }
