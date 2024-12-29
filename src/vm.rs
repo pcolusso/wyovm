@@ -248,6 +248,16 @@ impl Machine {
         self.mem[addr as usize] = self[source_register];
     }
 
+    fn store_indirect(&mut self, instruction: u16) {
+        assert!(instruction.extract(12..=15) == 0b1011);
+        let sr = instruction.extract(9..=11);
+        let source_register = to_reg(sr);
+        let offset = sign_extend(instruction.extract(0..=8), 9);
+        let addr = offset.wrapping_add(self[Register::PC]);
+        let actual_address = self.mem[addr as usize];
+        self.mem[actual_address as usize] = self[source_register];
+    }
+
     fn bitwise_not(&mut self, instruction: u16) {
         let destination_register = to_reg(instruction.extract(9..=11));
         let source_register = to_reg(instruction.extract(6..=8));
@@ -787,5 +797,57 @@ mod tests {
 
         // Check if value was stored at correct memory location
         assert_eq!(m.mem[m[Register::PC].wrapping_add(offset) as usize], 0xABCD);
+    }
+
+    #[test]
+    fn store_indirect() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::PC] = 0x3000; // Starting PC value
+        m[Register::R3] = 0xBEEF; // Value to store
+        let offset = 0x0001; // Offset to pointer
+        let target_addr = 0x4000; // Where we actually want to store
+
+        // Set up the pointer in memory
+        m.mem[(m[Register::PC].wrapping_add(offset)) as usize] = target_addr;
+
+        //                  STI   R3  offset
+        let instruction = 0b1011_011_000000001;
+        info!(
+            "STI R3 using pointer at PC + {:#x}, storing to {:#x}",
+            offset, target_addr
+        );
+
+        m.store_indirect(instruction);
+
+        // Check if value was stored at the location pointed to
+        assert_eq!(m.mem[target_addr as usize], 0xBEEF);
+    }
+
+    #[test]
+    fn store_indirect_negative_offset() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::PC] = 0x3000; // Starting PC value
+        m[Register::R5] = 0xCAFE; // Value to store
+        let offset = -4i16 as u16; // Negative offset to pointer
+        let target_addr = 0x5000; // Where we actually want to store
+
+        // Set up the pointer in memory
+        m.mem[(m[Register::PC].wrapping_add(offset)) as usize] = target_addr;
+
+        //                  STI   R5  offset (111111100 in binary)
+        let instruction = 0b1011_101_111111100;
+        info!(
+            "STI R5 using pointer at PC - 4, storing to {:#x}",
+            target_addr
+        );
+
+        m.store_indirect(instruction);
+
+        // Check if value was stored at the location pointed to
+        assert_eq!(m.mem[target_addr as usize], 0xCAFE);
     }
 }
