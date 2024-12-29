@@ -234,6 +234,20 @@ impl Machine {
         );
     }
 
+    fn return_from_interrupt(&mut self, instruction: u16) {
+        assert!(instruction.extract(12..=15) == 0b1000);
+        panic!("RTI not implemented!");
+    }
+
+    fn store(&mut self, instruction: u16) {
+        assert!(instruction.extract(12..=15) == 0b0011);
+        let sr = instruction.extract(9..=11);
+        let source_register = to_reg(sr);
+        let offset = sign_extend(instruction.extract(0..=8), 9);
+        let addr = offset.wrapping_add(self[Register::PC]);
+        self.mem[addr as usize] = self[source_register];
+    }
+
     fn bitwise_not(&mut self, instruction: u16) {
         let destination_register = to_reg(instruction.extract(9..=11));
         let source_register = to_reg(instruction.extract(6..=8));
@@ -728,5 +742,50 @@ mod tests {
 
         assert_eq!(m[Register::R4], 0x3100);
         assert_eq!(m.get_condition(), Condition::Zero);
+    }
+
+    #[test]
+    fn store() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::PC] = 0x3000; // Some starting PC value
+        m[Register::R2] = 0x4242; // Value to store
+        let offset = 0x0012; // Positive offset
+
+        //                  STR   R2  offset
+        let instruction = 0b0011_010_000010010;
+        info!(
+            "STR R2 to memory location PC + {:#x} ({:#x})",
+            offset,
+            m[Register::PC].wrapping_add(offset)
+        );
+
+        m.store(instruction);
+
+        // Check if value was stored at correct memory location
+        assert_eq!(m.mem[m[Register::PC].wrapping_add(offset) as usize], 0x4242);
+    }
+
+    #[test]
+    fn store_negative_offset() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::PC] = 0x3000; // Some starting PC value
+        m[Register::R4] = 0xABCD; // Value to store
+        let offset = -8i16 as u16; // Negative offset
+
+        //                  STR   R4  offset (111111000 in binary)
+        let instruction = 0b0011_100_111111000;
+        info!(
+            "STR R4 to memory location PC - 8 ({:#x})",
+            m[Register::PC].wrapping_add(offset)
+        );
+
+        m.store(instruction);
+
+        // Check if value was stored at correct memory location
+        assert_eq!(m.mem[m[Register::PC].wrapping_add(offset) as usize], 0xABCD);
     }
 }
