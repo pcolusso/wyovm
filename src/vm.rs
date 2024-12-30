@@ -53,7 +53,7 @@ enum TrapCode {
 }
 
 #[derive(FromPrimitive, ToPrimitive, Debug, Copy, Clone)]
-enum Register {
+pub enum Register {
     R0,
     R1,
     R2,
@@ -68,8 +68,8 @@ enum Register {
 }
 pub struct Machine {
     pub mem: [u16; MEM_MAX],
-    reg: [u16; 11],
-    running: bool,
+    pub reg: [u16; 11],
+    pub running: bool,
 }
 
 // not too sure if worthwhile implementing Index<u16> for mem access.

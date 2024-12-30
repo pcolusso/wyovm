@@ -38,7 +38,7 @@ fn main() -> Result<(), AppError> {
                 ..Default::default()
             })
             .run_with(move || {
-                let state = State { machine };
+                let state = State::new(machine);
                 (state, Task::none())
             })
             .expect("Failed to start UI");
