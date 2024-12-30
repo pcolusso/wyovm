@@ -108,27 +108,22 @@ impl Machine {
     pub fn load_image(&mut self, mut source: impl Read) {
         let origin = source
             .read_u16::<BigEndian>()
-            .expect("can't read origin")
-            .rotate_right(8); // BE -> LE
-        let max_read = MEM_MAX - origin as usize;
+            .expect("can't read origin");
+        debug!("Origin is 0x{:04x}", origin);
 
-        let mut p = origin as usize;
-        for _ in 0..max_read {
-            match source.read_u16::<BigEndian>() {
-                Ok(word) => {
-                    self.mem[p] = word.rotate_right(8);
-                    p += 1;
-                }
-                Err(_) => break, // Stop reading on any error
+        let mut current_addr = origin as usize;
+        while current_addr < MEM_MAX {
+            if let Ok(value) = source.read_u16::<BigEndian>() {
+                let op = Op::from_u16(value >> 12);
+                debug!("Read 0x{:04x}, {:?}", value, op);
+                self.mem[current_addr] = value;
+                current_addr += 1;
+            } else {
+                break;
             }
         }
-    }
 
-    // Simulates a mem_read(reg[PC]++)
-    fn incr_pc(&mut self) -> u16 {
-        let current = self[Register::PC];
-        self[Register::PC] += 1;
-        current
+        self[Register::PC] = origin;
     }
 
     // update the condition register
@@ -468,6 +463,13 @@ impl Machine {
         }
     }
 
+    // Simulates a mem_read(reg[PC]++)
+    fn incr_pc(&mut self) -> u16 {
+        let current = self.mem_read(self[Register::PC]);
+        self[Register::PC] += 1;
+        current
+    }
+
     pub fn run(&mut self) {
         while self.running {
             self.cycle();
@@ -478,7 +480,7 @@ impl Machine {
     pub fn cycle(&mut self) {
         // TODO: Perhaps a Instruction newtype, that Op can From?
         let instruction = self.incr_pc();
-        trace!("CYC: {:016b} 0x{:0x}", instruction, instruction);
+        trace!("Loaded: 0x{:0x}", instruction);
         trace!(
             "PC: 0x{:0x} R0: 0x{:0x} R1 0x{:0x}",
             self[Register::PC],
