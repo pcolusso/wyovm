@@ -311,6 +311,18 @@ impl Machine {
         );
     }
 
+    fn load_base_offset(&mut self, instruction: u16) {
+        assert!(instruction.extract(12..=15) == 0b0110);
+        let dr = instruction.extract(9..=11);
+        let br = instruction.extract(6..=8);
+        let offset = sign_extend(instruction.extract(0..=5), 6);
+        let destination_register = to_reg(dr);
+        let base_register = to_reg(br);
+        let o2 = self[base_register].wrapping_add(offset); // OpenAI mentioned???
+        self[destination_register] = o2;
+        self.update_flags(o2);
+    }
+
     fn store(&mut self, instruction: u16) {
         assert!(instruction.extract(12..=15) == 0b0011);
         let sr = instruction.extract(9..=11);
@@ -407,7 +419,8 @@ impl Machine {
         assert!(instruction.extract(12..=15) == 0b1111);
         let vec = instruction.extract(0..=7);
         self[Register::R7] = self[Register::PC];
-        match TrapCode::from_u16(vec) {
+        let trap = TrapCode::from_u16(vec);
+        match trap {
             Some(TrapCode::GetChar) => {
                 let mut buffer = [0; 1];
                 io::stdin()
@@ -417,7 +430,8 @@ impl Machine {
                 self.update_flags(self[Register::R0]);
             }
             Some(TrapCode::Out) => {
-                print!("{}", self[Register::R0]);
+                let char = self[Register::R0] as u8 as char;
+                print!("{}", char);
                 io::stdout().flush().expect("plumbing failure");
             }
             Some(TrapCode::In) => {
@@ -457,10 +471,11 @@ impl Machine {
                 // Flush the output to ensure all characters are printed
                 io::stdout().flush().expect("Failed to flush stdout");
             }
-            Some(TrapCode::Halt) => {}
+            Some(TrapCode::Halt) => self.running = false,
             None => panic!("bad trap"),
             _ => unimplemented!(),
         }
+        debug!("TRAP: {:?}", trap);
     }
 
     // Simulates a mem_read(reg[PC]++)
@@ -473,7 +488,6 @@ impl Machine {
     pub fn run(&mut self) {
         while self.running {
             self.cycle();
-            std::thread::sleep(std::time::Duration::from_millis(33));
         }
     }
 
@@ -501,7 +515,7 @@ impl Machine {
             Some(Op::Store) => self.store(instruction),
             Some(Op::StoreRegister) => self.store(instruction),
             Some(Op::StoreIndirect) => self.store_indirect(instruction),
-            Some(Op::LoadRegister) => todo!(),
+            Some(Op::LoadRegister) => self.load_base_offset(instruction),
             Some(Op::Unused) => panic!("Unused"),
             Some(Op::Reserved) => panic!("Reserved"),
             Some(Op::Trap) => self.trap(instruction),
