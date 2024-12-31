@@ -311,16 +311,16 @@ impl Machine {
         );
     }
 
-    fn load_base_offset(&mut self, instruction: u16) {
+    fn load_register(&mut self, instruction: u16) {
         assert!(instruction.extract(12..=15) == 0b0110);
         let dr = instruction.extract(9..=11);
         let br = instruction.extract(6..=8);
         let offset = sign_extend(instruction.extract(0..=5), 6);
         let destination_register = to_reg(dr);
         let base_register = to_reg(br);
-        let o2 = self[base_register].wrapping_add(offset); // OpenAI mentioned???
-        self[destination_register] = o2;
-        self.update_flags(o2);
+        let address = self[base_register].wrapping_add(offset);
+        self[destination_register] = self.mem_read(address);
+        self.update_flags(self[destination_register]);
     }
 
     fn store(&mut self, instruction: u16) {
@@ -420,6 +420,7 @@ impl Machine {
         let vec = instruction.extract(0..=7);
         self[Register::R7] = self[Register::PC];
         let trap = TrapCode::from_u16(vec);
+        debug!("TRAP: {:?}", trap);
         match trap {
             Some(TrapCode::GetChar) => {
                 let mut buffer = [0; 1];
@@ -475,7 +476,6 @@ impl Machine {
             None => panic!("bad trap"),
             _ => unimplemented!(),
         }
-        debug!("TRAP: {:?}", trap);
     }
 
     // Simulates a mem_read(reg[PC]++)
@@ -515,7 +515,7 @@ impl Machine {
             Some(Op::Store) => self.store(instruction),
             Some(Op::StoreRegister) => self.store(instruction),
             Some(Op::StoreIndirect) => self.store_indirect(instruction),
-            Some(Op::LoadRegister) => self.load_base_offset(instruction),
+            Some(Op::LoadRegister) => self.load_register(instruction),
             Some(Op::Unused) => panic!("Unused"),
             Some(Op::Reserved) => panic!("Reserved"),
             Some(Op::Trap) => self.trap(instruction),
@@ -1062,5 +1062,63 @@ mod tests {
         let f = std::fs::File::open("samples/hello_world.obj").expect("hello world sample lost");
         m.load_image(f);
         assert_eq!(m.mem[0x3000], 0xE206, "start instr is not LEA R1 x3007");
+    }
+
+    #[test]
+    fn load_register_positive_offset() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::R2] = 0x3000; // Base address in register R2
+        m.mem[0x3002usize] = 0x1234; // Memory location to load from
+
+        //                LDR   R1  R2  offset (10 in binary)
+        let instruction = 0b0110_001_010_000010; // LDR R1, R2, #2
+
+        info!("LDR R1 from (R2 + 2 = 0x3002), expects 0x1234");
+
+        // Execute the instruction
+        m.load_register(instruction);
+
+        // Check if the value was loaded correctly
+        assert_eq!(m[Register::R1], 0x1234);
+    }
+
+    #[test]
+    fn load_register_negative_offset() {
+        let mut m = Machine::new();
+
+        // Setup initial conditions
+        m[Register::R3] = 0x3010; // Base address in register R3
+        m.mem[0x300Eusize] = 0x5678; // Memory location to load from
+
+        //                LDR   R4  R3  offset (-2 in binary)
+        let instruction = 0b0110_100_011_111110; // LDR R4, R3, #-2
+
+        info!("LDR R4 from (R3 - 2 = 0x300E), expects 0x5678");
+
+        // Execute the instruction
+        m.load_register(instruction);
+
+        // Check if the value was loaded correctly
+        assert_eq!(m[Register::R4], 0x5678);
+    }
+
+    #[test]
+    fn hello_world_walkthrough() {
+        let mut m = Machine::new();
+        let f = std::fs::File::open("samples/hello_world.obj").expect("hello world sample lost");
+        m.load_image(f);
+
+        // First instruction is LEA into R1 the value at 0x3007.
+        m.cycle();
+        assert_eq!(m.mem_read(0x3007), 'H' as u16);
+
+        // Next, use LDR to load the value of the memory address offset by 0 into R0.
+        m.cycle();
+        assert_eq!(m[Register::R0], 'H' as u16);
+
+        // Next, branch to HALT if the cond flag is Zero (it shouldn't be yet.)
+        assert_ne!(m[Register::Cond], Condition::Zero as u16);
     }
 }
