@@ -38,7 +38,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["samples/hello_world.obj"],
+            "args": ["samples/rogue.obj"],
             "cwd": "${workspaceFolder}"
         },
         {

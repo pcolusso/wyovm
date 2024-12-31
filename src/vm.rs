@@ -388,7 +388,7 @@ impl Machine {
 
         if register_mode {
             // register mode
-            let source_register_2 = to_reg(instruction.extract(0..=3));
+            let source_register_2 = to_reg(instruction.extract(0..=2));
             self[destination_register] = self[source_register_1] & self[source_register_2];
             debug!(
                 "AND REG {:?} ({}) & {:?} ({}) -> {:?} ({})",
@@ -541,7 +541,10 @@ impl Default for Machine {
 
 // Helper function to hammer a u16 (likely masked) into a Register.
 fn to_reg(value: u16) -> Register {
-    Register::from_u16(value).expect("Couldn't find register with value. Has it been shifted?")
+    match Register::from_u16(value) {
+        Some(r) => r,
+        None => panic!("Couldn't find register with value. Has it been shifted?")
+    }
 }
 
 #[cfg(test)]

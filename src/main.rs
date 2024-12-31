@@ -1,9 +1,9 @@
 use std::fs::File;
 
 use clap::Parser;
+use scopeguard::defer;
 use thiserror::Error;
 use tracing::{error, info};
-
 use wyovm::Machine;
 
 #[derive(Parser)]
@@ -24,6 +24,9 @@ fn main() -> Result<(), AppError> {
     let app = App::parse();
     let mut machine = Machine::default();
     machine.load_image(File::open(app.image_path)?);
+
+    crossterm::terminal::enable_raw_mode()?;
+    defer! { crossterm::terminal::disable_raw_mode().unwrap(); }
 
     #[cfg(feature = "ui")]
     {
