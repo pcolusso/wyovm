@@ -22,7 +22,7 @@ fn main() -> Result<(), AppError> {
     // TODO: https://www.jmeiners.com/lc3-vm/#:setup
 
     let app = App::parse();
-    let mut machine = Machine::new();
+    let mut machine = Machine::default();
     machine.load_image(File::open(app.image_path)?);
 
     #[cfg(feature = "ui")]

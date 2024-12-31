@@ -70,6 +70,7 @@ pub struct Machine {
     pub mem: [u16; MEM_MAX],
     pub reg: [u16; 11],
     pub running: bool,
+    out: Box<dyn Write>,
 }
 
 // not too sure if worthwhile implementing Index<u16> for mem access.
@@ -90,11 +91,11 @@ impl IndexMut<Register> for Machine {
 }
 
 impl Machine {
-    pub fn new() -> Self {
+    pub fn new(out: Box<dyn Write>) -> Self {
         let mem = [0; MEM_MAX];
         let reg = [0; 11];
         let running = true;
-        let mut machine = Self { mem, reg, running };
+        let mut machine = Self { mem, reg, running, out };
 
         // TODO:: this may be better moved into the run method.
         // since exactly one condition flag should be set at any given time, set the Z flag
@@ -194,11 +195,11 @@ impl Machine {
                 "ADD REG SR1 {:?} + SR2 {:?} -> DR {:?}",
                 source_register, source_register_2, destination_register
             );
-            self[destination_register] = self[source_register] + self[source_register_2];
+            self[destination_register] = self[source_register].wrapping_add(self[source_register_2]);
         } else {
             let imm5 = sign_extend(instruction.extract(0..=4), 5);
             //let imm5 = sign_extend(instruction & 0x1F, 5);
-            self[destination_register] = self[source_register] + imm5; // Simple addition in u16
+            self[destination_register] = self[source_register].wrapping_add(imm5);
             debug!(
                 "ADD IMM {} + {:?} -> {:?}",
                 imm5, source_register, destination_register
@@ -346,7 +347,7 @@ impl Machine {
         self.mem[actual_address as usize] = self[source_register];
     }
 
-    fn store_base(&mut self, instruction: u16) {
+    fn store_register(&mut self, instruction: u16) {
         assert!(instruction.extract(12..=15) == 0b0111);
         let sr = instruction.extract(9..=11);
         let source_register = to_reg(sr);
@@ -432,18 +433,24 @@ impl Machine {
             }
             Some(TrapCode::Out) => {
                 let char = self[Register::R0] as u8 as char;
-                print!("{}", char);
+                write!(self.out, "{}", char);
                 io::stdout().flush().expect("plumbing failure");
             }
             Some(TrapCode::In) => {
-                print!("Enter a character: ");
+                write!(self.out, "Enter a character: ");
                 let mut buffer = [0; 1];
                 io::stdin()
                     .read_exact(&mut buffer)
                     .expect("Failed to read input");
-                print!("{}", buffer[0]);
+                write!(self.out, "{}", buffer[0]);
                 self[Register::R0] = buffer[0] as u16;
                 self.update_flags(self[Register::R0]);
+            }
+            Some(TrapCode::Put) => {
+                let start = self[Register::R0] as usize;
+                let end = self.mem[start..MEM_MAX].iter().position(|c| *c == 0).expect("Unterminated string");
+                let string: String = self.mem[start..start+end].iter().map(|&x| char::from(x as u8)).collect();
+                writeln!(self.out, "{}", string);
             }
             Some(TrapCode::PutSP) => {
                 let addr = self[Register::R0] as usize;
@@ -457,12 +464,12 @@ impl Machine {
 
                     // Extract and print the first char (lower byte)
                     let char1 = (word & 0xFF) as u8 as char;
-                    print!("{}", char1);
+                    write!(self.out, "{}", char1);
 
                     // Extract and print the second char (upper byte), if it's not zero
                     let char2 = (word >> 8) as u8;
                     if char2 != 0 {
-                        print!("{}", char2 as char);
+                        write!(self.out, "{}", char2 as char);
                     }
 
                     // Move to the next memory location
@@ -474,7 +481,6 @@ impl Machine {
             }
             Some(TrapCode::Halt) => self.running = false,
             None => panic!("bad trap"),
-            _ => unimplemented!(),
         }
     }
 
@@ -513,7 +519,7 @@ impl Machine {
             Some(Op::LoadIndirect) => self.load_indirect(instruction),
             Some(Op::LoadEffectiveAddress) => self.load_effective_address(instruction),
             Some(Op::Store) => self.store(instruction),
-            Some(Op::StoreRegister) => self.store(instruction),
+            Some(Op::StoreRegister) => self.store_register(instruction),
             Some(Op::StoreIndirect) => self.store_indirect(instruction),
             Some(Op::LoadRegister) => self.load_register(instruction),
             Some(Op::Unused) => panic!("Unused"),
@@ -529,7 +535,7 @@ impl Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Self::new()
+        Self::new(Box::new(std::io::stdout()))
     }
 }
 
@@ -548,7 +554,7 @@ mod tests {
 
     #[test]
     fn add_register() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         m[Register::R0] = 5;
         m[Register::R1] = 3;
@@ -565,7 +571,7 @@ mod tests {
 
     #[test]
     fn add_immediate() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         m[Register::R1] = 5;
         //                   ADD  R0  R1 I     3
@@ -579,7 +585,7 @@ mod tests {
 
     #[test]
     fn add_negative() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Set up for a negative result
         m[Register::R1] = 5;
@@ -599,7 +605,7 @@ mod tests {
 
     #[test]
     fn load_indirect() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m.mem[6969] = 'a' as u16; // Far data
         m[Register::PC] = 6900;
 
@@ -614,7 +620,7 @@ mod tests {
 
     #[test]
     fn and_register_mode() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::R7] = 7;
         m[Register::R5] = 5;
 
@@ -629,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_and_immediate() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::R6] = 4;
 
         //                   AND  R3  R6     9
@@ -643,7 +649,7 @@ mod tests {
 
     #[test]
     fn not() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::R2] = 12;
 
         //                   NOT  R3  R2 111111
@@ -662,7 +668,7 @@ mod tests {
 
     #[test]
     fn branch_positive() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         let offset = 0x44;
         m[Register::PC] = 0x23;
         let dest = offset + m[Register::PC];
@@ -678,7 +684,7 @@ mod tests {
 
     #[test]
     fn branch_negative() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         let offset = 12_i16 as u8; // can't seem to branch negative.
         m[Register::PC] = 52;
         let dest = 64;
@@ -694,7 +700,7 @@ mod tests {
 
     #[test]
     fn do_not_branch() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         let offset = 12_i16 as u8; // can't seem to branch negative.
         m[Register::PC] = 52;
         let dest = 64;
@@ -710,7 +716,7 @@ mod tests {
 
     #[test]
     fn jump() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         let dest = 0x98;
         m[Register::PC] = 0x69;
         m[Register::R6] = dest;
@@ -726,7 +732,7 @@ mod tests {
     // here be tests writtne by claude, cause it got tiring.
     #[test]
     fn jump_register_long_mode() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x6969;
 
         // JSR with offset of 5
@@ -741,7 +747,7 @@ mod tests {
 
     #[test]
     fn jump_register_reg_mode() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x3000;
         m[Register::R7] = 0x3100;
         m[Register::R3] = 0x4000;
@@ -758,7 +764,7 @@ mod tests {
 
     #[test]
     fn jump_register_long_mode_negative_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x3000;
         m[Register::R7] = 0x3100;
 
@@ -774,7 +780,7 @@ mod tests {
 
     #[test]
     fn jump_register_saves_r7() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         let original_pc = 0x3000;
         m[Register::PC] = original_pc;
         m[Register::R3] = 0x4000;
@@ -794,7 +800,7 @@ mod tests {
 
     #[test]
     fn load_positive_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         // Set up initial state
         m[Register::PC] = 0x3000;
         // Put a known value in memory
@@ -811,7 +817,7 @@ mod tests {
 
     #[test]
     fn load_negative_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x325;
         m.mem[0x320] = 0xBEEF;
 
@@ -825,7 +831,7 @@ mod tests {
 
     #[test]
     fn load_zero_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x3000;
         m.mem[0x3000] = 0xABCD;
 
@@ -839,7 +845,7 @@ mod tests {
 
     #[test]
     fn load_effective_address_positive_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x3000;
 
         //                  LEA R1 offset=0x20
@@ -853,7 +859,7 @@ mod tests {
 
     #[test]
     fn load_effective_address_negative_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x3000;
 
         //                  LEA R2 offset=-16
@@ -867,7 +873,7 @@ mod tests {
 
     #[test]
     fn load_effective_address_zero_result() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x0011;
 
         let instruction = 0b1110_011_111101111;
@@ -880,7 +886,7 @@ mod tests {
 
     #[test]
     fn load_effective_address_max_positive_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         m[Register::PC] = 0x3001;
 
         //                  LEA R4 offset=255
@@ -894,7 +900,7 @@ mod tests {
 
     #[test]
     fn store() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::PC] = 0x3000; // Some starting PC value
@@ -917,7 +923,7 @@ mod tests {
 
     #[test]
     fn store_negative_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::PC] = 0x3000; // Some starting PC value
@@ -939,7 +945,7 @@ mod tests {
 
     #[test]
     fn store_indirect() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::PC] = 0x3000; // Starting PC value
@@ -965,7 +971,7 @@ mod tests {
 
     #[test]
     fn store_indirect_negative_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::PC] = 0x3000; // Starting PC value
@@ -991,7 +997,7 @@ mod tests {
 
     #[test]
     fn store_base() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::R2] = 0x3000; // Base register value
@@ -1006,7 +1012,7 @@ mod tests {
             m[Register::R2].wrapping_add(offset)
         );
 
-        m.store_base(instruction);
+        m.store_register(instruction);
 
         // Check if value was stored at correct memory location
         assert_eq!(m.mem[m[Register::R2].wrapping_add(offset) as usize], 0xDEAD);
@@ -1014,7 +1020,7 @@ mod tests {
 
     #[test]
     fn store_base_negative_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::R1] = 0x4000; // Base register value
@@ -1028,7 +1034,7 @@ mod tests {
             m[Register::R1].wrapping_add(offset)
         );
 
-        m.store_base(instruction);
+        m.store_register(instruction);
 
         // Check if value was stored at correct memory location
         assert_eq!(m.mem[m[Register::R1].wrapping_add(offset) as usize], 0xFACE);
@@ -1036,7 +1042,7 @@ mod tests {
 
     #[test]
     fn store_base_same_register() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::R5] = 0x2000; // Both base and value to store
@@ -1050,7 +1056,7 @@ mod tests {
             m[Register::R5].wrapping_add(offset)
         );
 
-        m.store_base(instruction);
+        m.store_register(instruction);
 
         // Check if value was stored at correct memory location
         assert_eq!(m.mem[m[Register::R5].wrapping_add(offset) as usize], 0x2000);
@@ -1058,7 +1064,7 @@ mod tests {
 
     #[test]
     fn can_read_origin() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         let f = std::fs::File::open("samples/hello_world.obj").expect("hello world sample lost");
         m.load_image(f);
         assert_eq!(m.mem[0x3000], 0xE206, "start instr is not LEA R1 x3007");
@@ -1066,7 +1072,7 @@ mod tests {
 
     #[test]
     fn load_register_positive_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::R2] = 0x3000; // Base address in register R2
@@ -1086,7 +1092,7 @@ mod tests {
 
     #[test]
     fn load_register_negative_offset() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
 
         // Setup initial conditions
         m[Register::R3] = 0x3010; // Base address in register R3
@@ -1106,7 +1112,7 @@ mod tests {
 
     #[test]
     fn hello_world_walkthrough() {
-        let mut m = Machine::new();
+        let mut m = Machine::default();
         let f = std::fs::File::open("samples/hello_world.obj").expect("hello world sample lost");
         m.load_image(f);
 
