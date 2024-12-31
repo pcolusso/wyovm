@@ -433,16 +433,16 @@ impl Machine {
             }
             Some(TrapCode::Out) => {
                 let char = self[Register::R0] as u8 as char;
-                write!(self.out, "{}", char);
-                io::stdout().flush().expect("plumbing failure");
+                write!(self.out, "{}", char).expect("Failed to write out");
+                self.out.flush().expect("plumbing failure");
             }
             Some(TrapCode::In) => {
-                write!(self.out, "Enter a character: ");
+                write!(self.out, "Enter a character: ").expect("Failed to write out");
                 let mut buffer = [0; 1];
                 io::stdin()
                     .read_exact(&mut buffer)
                     .expect("Failed to read input");
-                write!(self.out, "{}", buffer[0]);
+                write!(self.out, "{}", buffer[0]).expect("Failed to write out");
                 self[Register::R0] = buffer[0] as u16;
                 self.update_flags(self[Register::R0]);
             }
@@ -450,7 +450,7 @@ impl Machine {
                 let start = self[Register::R0] as usize;
                 let end = self.mem[start..MEM_MAX].iter().position(|c| *c == 0).expect("Unterminated string");
                 let string: String = self.mem[start..start+end].iter().map(|&x| char::from(x as u8)).collect();
-                writeln!(self.out, "{}", string);
+                writeln!(self.out, "{}", string).expect("Failed to write");
             }
             Some(TrapCode::PutSP) => {
                 let addr = self[Register::R0] as usize;
@@ -464,12 +464,12 @@ impl Machine {
 
                     // Extract and print the first char (lower byte)
                     let char1 = (word & 0xFF) as u8 as char;
-                    write!(self.out, "{}", char1);
+                    write!(self.out, "{}", char1).expect("Failed to write");
 
                     // Extract and print the second char (upper byte), if it's not zero
                     let char2 = (word >> 8) as u8;
                     if char2 != 0 {
-                        write!(self.out, "{}", char2 as char);
+                        write!(self.out, "{}", char2 as char).expect("Failed to write");
                     }
 
                     // Move to the next memory location
