@@ -11,7 +11,7 @@ status: LDR was broken, should've tested it. Hello World now works!
  - Break down functions so they can be unit-tested.
  - Extension traits, and how we can get around the orphaned trait rule.
  - Shifting & masking, but need more practice.
- - Two's complement requires a *lot* more reading and practice.
+ - ~~Two's complement requires a *lot* more reading and practice.~~ I get it now, it takes advantage of wrapping adds to work seamlessley between signed and unsigned.
 
 ## Remarks
 

@@ -21,7 +21,7 @@ fn test_hello_world() {
     // I feel all this ceremony is not necessary...
     let buf = Rc::new(RefCell::new(Vec::new()));
     {
-        let mut m = Machine::new(Box::new(WritableBuffer(buf.clone())));
+        let mut m = Machine::new(std::io::stdin(), Box::new(WritableBuffer(buf.clone())));
         m.load_image(f);
         m.run();
     }

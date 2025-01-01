@@ -6,8 +6,10 @@ use num_traits::FromPrimitive;
 
 use crate::{vm, Machine};
 
+type MyMachine = Machine<std::io::Stdin, std::io::Stdout>;
+
 pub struct State {
-    pub machine: Machine,
+    pub machine: MyMachine,
     pub running: bool,
 }
 
@@ -18,7 +20,7 @@ pub enum Message {
 }
 
 impl State {
-    pub fn new(machine: Machine) -> Self {
+    pub fn new(machine: MyMachine) -> Self {
         let running = false;
         Self { machine, running }
     }

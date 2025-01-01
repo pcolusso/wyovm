@@ -5,7 +5,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use std::{
     cmp::Ordering,
-    io::{self, Read, Write},
+    io::{Read, Write},
     ops::{Index, IndexMut},
 };
 use tracing::{debug, error, trace};
@@ -52,7 +52,7 @@ enum TrapCode {
     Halt,
 }
 
-#[derive(FromPrimitive, ToPrimitive, Debug, Copy, Clone)]
+#[derive(FromPrimitive, Debug, Copy, Clone)]
 pub enum Register {
     R0,
     R1,
@@ -66,17 +66,28 @@ pub enum Register {
     Cond,
     Count,
 }
-pub struct Machine {
+
+impl From<u16> for Register {
+    fn from(value: u16) -> Self {
+        match Register::from_u16(value) {
+            Some(r) => r,
+            None => panic!("Couldn't find register with value. Has it been shifted?")
+        }
+    }
+}
+
+pub struct Machine<R: Read, W: Write> {
     pub mem: [u16; MEM_MAX],
     pub reg: [u16; 11],
     pub running: bool,
-    out: Box<dyn Write>,
+    input: R,
+    output: W
 }
 
 // not too sure if worthwhile implementing Index<u16> for mem access.
 // Registers can sometimes come from u16, so it could be confusing.
 // Maybe a newtype?
-impl Index<Register> for Machine {
+impl<R: Read, W: Write> Index<Register> for Machine<R, W> {
     type Output = u16;
 
     fn index(&self, r: Register) -> &Self::Output {
@@ -84,18 +95,18 @@ impl Index<Register> for Machine {
     }
 }
 
-impl IndexMut<Register> for Machine {
+impl<R: Read, W: Write> IndexMut<Register> for Machine<R, W> {
     fn index_mut(&mut self, register: Register) -> &mut Self::Output {
         &mut self.reg[register as usize]
     }
 }
 
-impl Machine {
-    pub fn new(out: Box<dyn Write>) -> Self {
+impl<R: Read, W: Write> Machine<R, W> {
+    pub fn new(input: R, output: W) -> Self {
         let mem = [0; MEM_MAX];
         let reg = [0; 11];
         let running = true;
-        let mut machine = Self { mem, reg, running, out };
+        let mut machine = Self { mem, reg, running, input, output };
 
         // TODO:: this may be better moved into the run method.
         // since exactly one condition flag should be set at any given time, set the Z flag
@@ -148,7 +159,7 @@ impl Machine {
     fn mem_read(&mut self, addr: u16) -> u16 {
         if addr == 0xFE00 {
             let mut buffer = [0; 1];
-            io::stdin()
+            self.input
                 .read_exact(&mut buffer)
                 .expect("Failed to read input");
             self.mem[0xFE00] = 1 << 15;
@@ -183,14 +194,14 @@ impl Machine {
         */
         debug!("ADD {:#016b}", instruction);
         // Common for both modes
-        let destination_register = to_reg(instruction.extract(9..=11));
-        let source_register = to_reg(instruction.extract(6..=8));
+        let destination_register = instruction.extract(9..=11).into();
+        let source_register = instruction.extract(6..=8).into();
         // otherwise register mode.
         let is_imm_mode = (instruction >> 5) & 0x1;
         // alternativley, imm_mode = (instruction >> 5) & 0x1
 
         if is_imm_mode == 0 {
-            let source_register_2 = to_reg(instruction & 0x7);
+            let source_register_2 = instruction.extract(0..=2).into();
             debug!(
                 "ADD REG SR1 {:?} + SR2 {:?} -> DR {:?}",
                 source_register, source_register_2, destination_register
@@ -210,7 +221,7 @@ impl Machine {
     }
 
     fn jump(&mut self, instruction: u16) {
-        let base_register = to_reg(instruction.extract(6..=9));
+        let base_register = instruction.extract(6..=9).into();
         let value = self[base_register];
         debug!("JMP Set PC to {} from {:?}", value, base_register);
         self[Register::PC] = value;
@@ -229,7 +240,7 @@ impl Machine {
                 self[Register::PC]
             );
         } else {
-            let base_register = to_reg(instruction.extract(6..=8));
+            let base_register = instruction.extract(6..=8).into();
             self[Register::PC] = self[base_register];
             debug!(
                 "JSRR Set PC to value in {:?} ({})",
@@ -260,7 +271,7 @@ impl Machine {
         let dr = instruction.extract(9..=12); // WHYYYYY
         debug!("INSR: {:016b}", instruction);
         debug!("DR: {:08b}", dr);
-        let destination_register = to_reg(dr);
+        let destination_register = dr.into();
         let offset = instruction.extract(0..=9);
         let signed = sign_extend(offset, 9);
         let addr = signed.wrapping_add(self[Register::PC]);
@@ -282,7 +293,7 @@ impl Machine {
          │          │       │                         │
         */
         debug!("{:016b}", instruction);
-        let destination_register = to_reg(instruction.extract(9..=11));
+        let destination_register = instruction.extract(9..=11).into();
         let pc_offset_9 = sign_extend(instruction.extract(0..=8), 9);
         let idx = self[Register::PC] + pc_offset_9;
         debug!(
@@ -299,7 +310,7 @@ impl Machine {
     fn load_effective_address(&mut self, instruction: u16) {
         assert!(instruction.extract(12..=15) == 0b1110);
         let dr = instruction.extract(9..=11);
-        let destination_register = to_reg(dr);
+        let destination_register = dr.into();
         let offset = sign_extend(instruction.extract(0..=8), 9);
         let addr = offset.wrapping_add(self[Register::PC]);
         self[destination_register] = addr;
@@ -317,8 +328,8 @@ impl Machine {
         let dr = instruction.extract(9..=11);
         let br = instruction.extract(6..=8);
         let offset = sign_extend(instruction.extract(0..=5), 6);
-        let destination_register = to_reg(dr);
-        let base_register = to_reg(br);
+        let destination_register = dr.into();
+        let base_register = br.into();
         let address = self[base_register].wrapping_add(offset);
         self[destination_register] = self.mem_read(address);
         self.update_flags(self[destination_register]);
@@ -327,7 +338,7 @@ impl Machine {
     fn store(&mut self, instruction: u16) {
         assert!(instruction.extract(12..=15) == 0b0011);
         let sr = instruction.extract(9..=11);
-        let source_register = to_reg(sr);
+        let source_register = sr.into();
         let offset = sign_extend(instruction.extract(0..=8), 9);
         let addr = offset.wrapping_add(self[Register::PC]);
         self.mem[addr as usize] = self[source_register];
@@ -340,7 +351,7 @@ impl Machine {
     fn store_indirect(&mut self, instruction: u16) {
         assert!(instruction.extract(12..=15) == 0b1011);
         let sr = instruction.extract(9..=11);
-        let source_register = to_reg(sr);
+        let source_register = sr.into();
         let offset = sign_extend(instruction.extract(0..=8), 9);
         let addr = offset.wrapping_add(self[Register::PC]);
         let actual_address = self.mem_read(addr);
@@ -350,17 +361,17 @@ impl Machine {
     fn store_register(&mut self, instruction: u16) {
         assert!(instruction.extract(12..=15) == 0b0111);
         let sr = instruction.extract(9..=11);
-        let source_register = to_reg(sr);
+        let source_register = sr.into();
         let br = instruction.extract(6..=8);
-        let base_register = to_reg(br);
+        let base_register = br.into();
         let offset = sign_extend(instruction.extract(0..=5), 6);
         let addr = offset.wrapping_add(self[base_register]);
         self.mem[addr as usize] = self[source_register];
     }
 
     fn bitwise_not(&mut self, instruction: u16) {
-        let destination_register = to_reg(instruction.extract(9..=11));
-        let source_register = to_reg(instruction.extract(6..=8));
+        let destination_register = instruction.extract(9..=11).into();
+        let source_register = instruction.extract(6..=8).into();
         self[destination_register] = !self[source_register];
         debug!(
             "NOT ! {:?} ({:08b}) -> {:?} ({:08b})",
@@ -376,8 +387,8 @@ impl Machine {
         // im gonna stop doing the ascii diagrams for now, as they don't actually tell me the info
         // i need.
         // REF: Pg525
-        let destination_register = to_reg(instruction.extract(9..=11));
-        let source_register_1 = to_reg(instruction.extract(6..=8));
+        let destination_register = instruction.extract(9..=11).into();
+        let source_register_1 = instruction.extract(6..=8).into();
         let register_mode = instruction.extract_flag(5);
         debug!("AND INSTR: {:016b}", instruction);
         debug!(
@@ -388,7 +399,7 @@ impl Machine {
 
         if register_mode {
             // register mode
-            let source_register_2 = to_reg(instruction.extract(0..=2));
+            let source_register_2 = instruction.extract(0..=2).into();
             self[destination_register] = self[source_register_1] & self[source_register_2];
             debug!(
                 "AND REG {:?} ({}) & {:?} ({}) -> {:?} ({})",
@@ -425,24 +436,20 @@ impl Machine {
         match trap {
             Some(TrapCode::GetChar) => {
                 let mut buffer = [0; 1];
-                io::stdin()
-                    .read_exact(&mut buffer)
-                    .expect("Failed to read input");
+                self.input.read_exact(&mut buffer).expect("Failed to read input");
                 self[Register::R0] = buffer[0] as u16;
                 self.update_flags(self[Register::R0]);
             }
             Some(TrapCode::Out) => {
                 let char = self[Register::R0] as u8 as char;
-                write!(self.out, "{}", char).expect("Failed to write out");
-                self.out.flush().expect("plumbing failure");
+                write!(self.output, "{}", char).expect("Failed to write out");
+                self.output.flush().expect("plumbing failure");
             }
             Some(TrapCode::In) => {
-                write!(self.out, "Enter a character: ").expect("Failed to write out");
+                write!(self.output, "Enter a character: ").expect("Failed to write out");
                 let mut buffer = [0; 1];
-                io::stdin()
-                    .read_exact(&mut buffer)
-                    .expect("Failed to read input");
-                write!(self.out, "{}", buffer[0]).expect("Failed to write out");
+                self.input.read_exact(&mut buffer).expect("Failed to read input");
+                write!(self.output, "{}", buffer[0]).expect("Failed to write out");
                 self[Register::R0] = buffer[0] as u16;
                 self.update_flags(self[Register::R0]);
             }
@@ -450,7 +457,7 @@ impl Machine {
                 let start = self[Register::R0] as usize;
                 let end = self.mem[start..MEM_MAX].iter().position(|c| *c == 0).expect("Unterminated string");
                 let string: String = self.mem[start..start+end].iter().map(|&x| char::from(x as u8)).collect();
-                writeln!(self.out, "{}", string).expect("Failed to write");
+                writeln!(self.output, "{}", string).expect("Failed to write");
             }
             Some(TrapCode::PutSP) => {
                 let addr = self[Register::R0] as usize;
@@ -464,12 +471,12 @@ impl Machine {
 
                     // Extract and print the first char (lower byte)
                     let char1 = (word & 0xFF) as u8 as char;
-                    write!(self.out, "{}", char1).expect("Failed to write");
+                    write!(self.output, "{}", char1).expect("Failed to write");
 
                     // Extract and print the second char (upper byte), if it's not zero
                     let char2 = (word >> 8) as u8;
                     if char2 != 0 {
-                        write!(self.out, "{}", char2 as char).expect("Failed to write");
+                        write!(self.output, "{}", char2 as char).expect("Failed to write");
                     }
 
                     // Move to the next memory location
@@ -477,7 +484,7 @@ impl Machine {
                 }
 
                 // Flush the output to ensure all characters are printed
-                io::stdout().flush().expect("Failed to flush stdout");
+                self.output.flush().expect("Failed to flush stdout");
             }
             Some(TrapCode::Halt) => self.running = false,
             None => panic!("bad trap"),
@@ -533,19 +540,14 @@ impl Machine {
     }
 }
 
-impl Default for Machine {
+impl Default for Machine<std::io::Stdin, std::io::Stdout> {
     fn default() -> Self {
-        Self::new(Box::new(std::io::stdout()))
+        let stdin = std::io::stdin();
+        let stdout = std::io::stdout();
+        Machine::new(stdin, stdout)
     }
 }
 
-// Helper function to hammer a u16 (likely masked) into a Register.
-fn to_reg(value: u16) -> Register {
-    match Register::from_u16(value) {
-        Some(r) => r,
-        None => panic!("Couldn't find register with value. Has it been shifted?")
-    }
-}
 
 #[cfg(test)]
 mod tests {
